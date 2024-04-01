@@ -1,0 +1,17 @@
+[package]
+name = "wifikey-server"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0"
+serialport = "4.3.0"
+kcp = "0.5"
+bytes = "1.1"
+log = { version = "0.4", default-features = false }
+time = "0.3"
+toml-cfg = "0.2"
+env_logger = "*"
+wksocket = { path = "../wksocket" }
