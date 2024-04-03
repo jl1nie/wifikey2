@@ -1,6 +1,7 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
 use log::{error, info, trace};
+use rand::random;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -9,9 +10,87 @@ use std::thread;
 
 use crate::wksession::WkSession;
 use crate::wkutil::sleep;
+use md5::{Digest, Md5};
 
 pub const PKT_SIZE: usize = 128;
 pub const MAX_SLOTS: usize = 128;
+
+pub struct WkAuth {
+    session: Arc<WkSession>,
+}
+
+impl WkAuth {
+    pub fn new(session: Arc<WkSession>) -> Self {
+        WkAuth { session }
+    }
+
+    pub fn response(&self, passwd: &str) -> Result<()> {
+        let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
+        let mut buf = [0u8; PKT_SIZE];
+
+        let req = random();
+        sendbuf.put_u32(req);
+        self.session.send(&sendbuf);
+
+        if self.session.recv_timeout(&mut buf, 5000).is_err() {
+            return Err(anyhow!("auth response time out"));
+        }
+        let mut rcvbuf = Cursor::new(buf);
+        let salt = rcvbuf.get_u32();
+        let mut hasher = Md5::new();
+        let hashstr = format!("{}{}", passwd, salt);
+        hasher.update(&hashstr);
+        let result = hasher.finalize();
+        info!("hashstr size={}", hashstr);
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&result);
+        self.session.send(&sendbuf);
+
+        if self.session.recv_timeout(&mut buf, 5000).is_err() {
+            return Err(anyhow!("auth response time out"));
+        }
+        let mut rcvbuf = Cursor::new(buf);
+        let res = rcvbuf.get_u32();
+        if req == res {
+            Ok(())
+        } else {
+            Err(anyhow!("auth response failed"))
+        }
+    }
+
+    pub fn challenge(&self, passwd: &str) -> Result<()> {
+        let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
+        let mut buf = [0u8; PKT_SIZE];
+        let mut hashbuf = &mut [0u8; PKT_SIZE];
+
+        if self.session.recv_timeout(&mut buf, 5000).is_err() {
+            return Err(anyhow!("auth challenge time out"));
+        }
+        let mut rcvbuf = Cursor::new(buf);
+        let req = rcvbuf.get_u32();
+
+        let chl = random();
+        sendbuf.put_u32(chl);
+        self.session.send(&sendbuf);
+
+        if self.session.recv_timeout(&mut buf, 5000).is_err() {
+            return Err(anyhow!("auth challenge time out"));
+        }
+        let mut hasher = Md5::new();
+        hasher.update(format!("{}{}", passwd, chl));
+        let r = hasher.finalize();
+        let hash = r.as_slice();
+        sendbuf.clear();
+        if buf.iter().eq(hash.iter()) {
+            sendbuf.put_u32(req);
+            self.session.send(&sendbuf);
+            Ok(())
+        } else {
+            sendbuf.put_u32(0);
+            Err(anyhow!("auth challenge fail"))
+        }
+    }
+}
 
 pub enum MessageSND {
     SendPacket(u32),
@@ -26,7 +105,7 @@ pub struct WkSender {
 }
 
 impl WkSender {
-    pub fn new(session: WkSession) -> Result<Self> {
+    pub fn new(session: Arc<WkSession>) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
         let mut buf = BytesMut::with_capacity(PKT_SIZE);
         let mut slots = Vec::<u8>::new();

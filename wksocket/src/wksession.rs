@@ -1,4 +1,4 @@
-use anyhow::{bail, Error, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use log::{error, info, trace};
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -223,7 +223,7 @@ impl WkSession {
                         }
                         let mut s = client_socket.lock().unwrap();
                         if s.waiting_conv() {
-                            let mut conv = kcp::get_conv(pkt);
+                            let conv = kcp::get_conv(pkt);
                             kcp::set_conv(pkt, conv);
                         }
                         if s.closed() {
@@ -232,7 +232,7 @@ impl WkSession {
                             s.input(pkt);
                         }
                     }
-                    Err(e) => {}
+                    Err(_) => {}
                 }
             }
         });
@@ -268,6 +268,21 @@ impl WkSession {
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
         let mut socket = self.socket.lock().unwrap();
         socket.recv(buf)
+    }
+
+    pub fn recv_timeout(&self, buf: &mut [u8], timeout: u32) -> Result<usize> {
+        let now = tick_count();
+        while tick_count() - now < timeout {
+            let mut socket = self.socket.lock().unwrap();
+            if let Ok(n) = socket.recv(buf) {
+                if n > 0 {
+                    return Ok(n);
+                }
+                sleep(10);
+                continue;
+            }
+        }
+        Err(anyhow!("recv timeout"))
     }
 
     pub fn close(&self) -> Result<()> {

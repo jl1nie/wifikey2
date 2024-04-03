@@ -1,10 +1,10 @@
 use anyhow::Result;
-use log::trace;
+use log::{info, trace};
 use std::net::ToSocketAddrs;
 use std::thread;
-use wksocket::WkListener;
 use wksocket::{sleep, tick_count};
 use wksocket::{MessageRCV, WkReceiver};
+use wksocket::{WkAuth, WkListener};
 
 fn main() -> Result<()> {
     std::env::set_var("RUST_LOG", "trace");
@@ -17,6 +17,13 @@ fn main() -> Result<()> {
         match listener.accept() {
             Ok((session, addr)) => {
                 println!("Accept new session from {}", addr);
+                /*
+                let auth = WkAuth::new(session.clone());
+                if auth.challenge("Hello").is_err() {
+                    info!("auth fail");
+                    continue;
+                }
+                */
                 let mesg = WkReceiver::new(session)?;
                 thread::spawn(move || loop {
                     match mesg.recv() {
