@@ -17,13 +17,13 @@ fn main() -> Result<()> {
         match listener.accept() {
             Ok((session, addr)) => {
                 println!("Accept new session from {}", addr);
-                /*
+
                 let auth = WkAuth::new(session.clone());
                 if auth.challenge("Hello").is_err() {
                     info!("auth fail");
                     continue;
                 }
-                */
+
                 let mesg = WkReceiver::new(session)?;
                 thread::spawn(move || loop {
                     match mesg.recv() {

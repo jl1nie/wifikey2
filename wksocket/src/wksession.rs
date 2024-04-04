@@ -194,7 +194,7 @@ impl WkSession {
         session
     }
 
-    pub fn connect(peer: SocketAddr) -> Result<WkSession> {
+    pub fn connect(peer: SocketAddr) -> Result<Arc<WkSession>> {
         let udp = match peer.ip() {
             IpAddr::V4(..) => UdpSocket::bind("0.0.0.0:0")?,
             IpAddr::V6(..) => UdpSocket::bind("[::]:0")?,
@@ -249,10 +249,10 @@ impl WkSession {
             }
         });
 
-        Ok(WkSession {
+        Ok(Arc::new(WkSession {
             socket,
             expire: Duration::from_secs(30),
-        })
+        }))
     }
 
     pub fn input(&self, buf: &[u8]) -> Result<()> {
@@ -278,7 +278,8 @@ impl WkSession {
                 if n > 0 {
                     return Ok(n);
                 }
-                sleep(10);
+                drop(socket);
+                sleep(1);
                 continue;
             }
         }
@@ -332,8 +333,10 @@ impl WkListener {
                         if let Some((ref session, current_peer)) = sessions {
                             if peer == current_peer {
                                 info!("input current session {} bytes", n);
-                                session.input(pkt);
-                                continue;
+                                if !session.closed() {
+                                    session.input(pkt);
+                                    continue;
+                                }
                             } else {
                                 info!("close current session");
                                 session.close();

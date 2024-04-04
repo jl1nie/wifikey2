@@ -12,12 +12,12 @@ fn main() -> Result<()> {
     let addr = "localhost:8080".to_socket_addrs().unwrap().next().unwrap();
     for _ in 1..3 {
         let session = WkSession::connect(addr).unwrap();
-        let session = Arc::new(session);
-        /*
+
         let auth = WkAuth::new(session.clone());
-        if auth.response("Hkello").is_err() {
-            continue;
-        }*/
+        if auth.response("Hello").is_err() {
+            println!("Auth failure");
+            break;
+        }
         let mut sender = WkSender::new(session).unwrap();
         for _ in 1..5 {
             let mut slot = 0;

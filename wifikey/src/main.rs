@@ -11,30 +11,34 @@ use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use log::{error, info, trace};
-use wksocket::{sleep, tick_count, MessageSND, WkSender, WkSession, MAX_SLOTS, PKT_SIZE};
+use wksocket::{sleep, tick_count, MessageSND, WkAuth, WkSender, WkSession, MAX_SLOTS, PKT_SIZE};
 
 #[toml_cfg::toml_config]
 pub struct Config {
     #[default("SSID")]
     wifi_ssid: &'static str,
-    #[default("PASSWS")]
+    #[default("PASSWD")]
     wifi_passwd: &'static str,
     #[default("remote-addr:port")]
     remote_server: &'static str,
+    #[default("password")]
+    server_password: &'static str,
 }
 
 const STABLE_PERIOD: i32 = 1;
-const SLEEP_PERIOD: usize = 100; // doze after empty packets received.
-const PKT_INTERVAL: usize = 50;
+const SLEEP_PERIOD: usize = 100; // Doze after empty packets sent.
+const PKT_INTERVAL: usize = 50; // Send keying packet every 50ms
+const KEEP_ALIVE: u32 = 15_000; // Send Keep Alive Packet every 15sec.
 
 static TRIGGER: AtomicBool = AtomicBool::new(false);
 static TICKCOUNT: AtomicU32 = AtomicU32::new(0);
 
-fn gpio_int_callback() {
+fn gpio_key_callback() {
     TRIGGER.store(true, Ordering::Relaxed);
     let now: u32 = unsafe { xTaskGetTickCountFromISR() };
     TICKCOUNT.store(now, Ordering::Relaxed);
 }
+
 fn main() -> Result<()> {
     esp_idf_sys::link_patches();
 
@@ -48,15 +52,24 @@ fn main() -> Result<()> {
     let red_color = std::iter::repeat(RGB8 { r: 5, g: 0, b: 0 }).take(1);
 
     led.write(red_color.clone()).unwrap();
-    let _wifi = wifi(peripherals.modem, sysloop.clone())?;
-    FreeRtos::delay_ms(2000);
+    let _wifi = wifi(peripherals.modem, sysloop.clone());
+
+    if _wifi.is_err() {
+        led.write(empty_color.clone()).unwrap();
+        FreeRtos::delay_ms(3000);
+        unsafe {
+            esp_idf_sys::esp_restart();
+        }
+    };
     led.write(empty_color.clone()).unwrap();
 
-    let mut button = PinDriver::input(peripherals.pins.gpio19)?;
-    button.set_pull(Pull::Up).unwrap();
-    button.set_interrupt_type(InterruptType::AnyEdge).unwrap();
-    unsafe { button.subscribe(gpio_int_callback).unwrap() };
-    button.enable_interrupt().unwrap();
+    let mut keyinput = PinDriver::input(peripherals.pins.gpio19)?;
+    keyinput.set_pull(Pull::Up).unwrap();
+    keyinput.set_interrupt_type(InterruptType::AnyEdge).unwrap();
+    unsafe { keyinput.subscribe(gpio_key_callback).unwrap() };
+    keyinput.enable_interrupt().unwrap();
+
+    let mut button = PinDriver::input(peripherals.pins.gpio39)?;
 
     let mut pkt_count: usize = 0;
     let mut slot_count: usize = 0;
@@ -76,75 +89,98 @@ fn main() -> Result<()> {
         .unwrap();
 
     info!("Remote Server ={}", remote_addr);
-    let mut session = WkSession::connect(remote_addr).unwrap();
-    let mut sender = WkSender::new(session).unwrap();
 
     loop {
-        sleep(1);
-        now = tick_count();
+        let mut session = WkSession::connect(remote_addr).unwrap();
 
-        if now - last_stat > 1000 {
-            last_stat = now;
-            info!("[{}] PKT={} EDGE={}", last_stat, pkt_count, edge_count);
-            edge_count = 0;
-            pkt_count = 0;
+        let auth = WkAuth::new(session.clone());
+        if auth.response(CONFIG.server_password).is_err() {
+            println!("Auth. Failed");
+            session.close();
+            sleep(10_000);
+            continue;
         }
 
-        if !dozing && now - last_sent >= PKT_INTERVAL as u32 {
-            // Send a new packet
-            pkt_count += 1;
-            sender.send(MessageSND::SendPacket(last_sent));
-            //
-            if slot_count == 0 {
-                sleep_count += 1;
-                if sleep_count > SLEEP_PERIOD {
-                    sleep_count = 0;
-                    dozing = true;
-                    info!("No activity. close session and dozing..");
-                    sender.send(MessageSND::CloseSession);
+        let mut sender = WkSender::new(session).unwrap();
+        loop {
+            sleep(1);
+            now = tick_count();
+
+            if dozing && now - last_stat > KEEP_ALIVE {
+                if sender.send(MessageSND::SendPacket(now)).is_err() {
+                    info!("connection closed by peer.");
+                    break;
                 }
+                last_stat = now;
+                info!("[{}] PKT={} EDGE={}", last_stat, pkt_count, edge_count);
+                edge_count = 0;
+                pkt_count = 0;
             }
-            // reset counters
-            last_sent = now;
-            slot_count = 0;
-            slot_pos = 0;
-        }
-        if TRIGGER.load(Ordering::Relaxed)
-            && now as i32 - TICKCOUNT.load(Ordering::Relaxed) as i32 > STABLE_PERIOD
-        {
-            TRIGGER.store(false, Ordering::Relaxed);
-            button.enable_interrupt().unwrap();
 
-            if dozing {
-                // prepare new packet
-                info!("Wake up create new session");
-                session = WkSession::connect(remote_addr).unwrap();
-                sender = WkSender::new(session).unwrap();
-                dozing = false;
-                last_sent = now;
-            }
-            sleep_count = 0;
-
-            slot_pos = (now - last_sent) as usize;
-            if slot_pos >= PKT_INTERVAL || slot_count >= MAX_SLOTS {
-                error!("over flow interval = {} slots = {}", slot_pos, slot_count);
+            if !dozing && now - last_sent >= PKT_INTERVAL as u32 {
+                // Send a new packet
+                pkt_count += 1;
+                if sender.send(MessageSND::SendPacket(last_sent)).is_err() {
+                    info!("connection closed by peer");
+                    break;
+                }
+                //
+                if slot_count == 0 {
+                    sleep_count += 1;
+                    if sleep_count > SLEEP_PERIOD {
+                        sleep_count = 0;
+                        dozing = true;
+                        info!("No activity. dozing...");
+                    }
+                }
+                // reset counters
                 last_sent = now;
                 slot_count = 0;
-            } else if button.is_high() {
-                led.write(empty_color.clone()).unwrap();
-                // Add Pos Edge
-                sender.send(MessageSND::PosEdge(slot_pos as u8));
-                slot_count += 1;
-                edge_count += 1;
-            } else {
-                led.write(red_color.clone()).unwrap();
-                // Add NEG Edge
-                sender.send(MessageSND::NegEdge(slot_pos as u8));
-                edge_count += 1;
-                slot_count += 1;
+                slot_pos = 0;
             }
-            TRIGGER.store(false, Ordering::Relaxed);
-            button.enable_interrupt().unwrap();
+
+            if button.is_low() {
+                info!("Start ATU");
+                led.write(red_color.clone()).unwrap();
+                sender.send(MessageSND::StartATU).unwrap();
+                sleep(500);
+                led.write(empty_color.clone()).unwrap();
+            }
+
+            if TRIGGER.load(Ordering::Relaxed)
+                && now as i32 - TICKCOUNT.load(Ordering::Relaxed) as i32 > STABLE_PERIOD
+            {
+                TRIGGER.store(false, Ordering::Relaxed);
+                keyinput.enable_interrupt().unwrap();
+
+                if dozing {
+                    // prepare new packet
+                    info!("Wake up.");
+                    dozing = false;
+                    last_sent = now;
+                    sender.send(MessageSND::SendPacket(last_sent));
+                }
+                sleep_count = 0;
+
+                slot_pos = (now - last_sent) as usize;
+                if slot_pos >= PKT_INTERVAL || slot_count >= MAX_SLOTS {
+                    error!("over flow interval = {} slots = {}", slot_pos, slot_count);
+                    last_sent = now;
+                    slot_count = 0;
+                } else if keyinput.is_high() {
+                    led.write(empty_color.clone()).unwrap();
+                    // Add Pos Edge
+                    sender.send(MessageSND::PosEdge(slot_pos as u8));
+                    slot_count += 1;
+                    edge_count += 1;
+                } else {
+                    led.write(red_color.clone()).unwrap();
+                    // Add NEG Edge
+                    sender.send(MessageSND::NegEdge(slot_pos as u8));
+                    edge_count += 1;
+                    slot_count += 1;
+                }
+            }
         }
     }
 }

@@ -8,12 +8,14 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
+use crate::tick_count;
 use crate::wksession::WkSession;
 use crate::wkutil::sleep;
 use md5::{Digest, Md5};
 
 pub const PKT_SIZE: usize = 128;
 pub const MAX_SLOTS: usize = 128;
+pub const SESSION_TIMEOUT: u32 = 180_000;
 
 pub struct WkAuth {
     session: Arc<WkSession>,
@@ -37,14 +39,14 @@ impl WkAuth {
         }
         let mut rcvbuf = Cursor::new(buf);
         let salt = rcvbuf.get_u32();
+
         let mut hasher = Md5::new();
         let hashstr = format!("{}{}", passwd, salt);
         hasher.update(&hashstr);
         let result = hasher.finalize();
-        info!("hashstr size={}", hashstr);
-        let mut buf = [0u8; 16];
+        let mut buf = &mut buf[..16];
         buf.copy_from_slice(&result);
-        self.session.send(&sendbuf);
+        self.session.send(&buf);
 
         if self.session.recv_timeout(&mut buf, 5000).is_err() {
             return Err(anyhow!("auth response time out"));
@@ -61,7 +63,6 @@ impl WkAuth {
     pub fn challenge(&self, passwd: &str) -> Result<()> {
         let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
         let mut buf = [0u8; PKT_SIZE];
-        let mut hashbuf = &mut [0u8; PKT_SIZE];
 
         if self.session.recv_timeout(&mut buf, 5000).is_err() {
             return Err(anyhow!("auth challenge time out"));
@@ -73,30 +74,39 @@ impl WkAuth {
         sendbuf.put_u32(chl);
         self.session.send(&sendbuf);
 
-        if self.session.recv_timeout(&mut buf, 5000).is_err() {
-            return Err(anyhow!("auth challenge time out"));
+        if let Ok(n) = self.session.recv_timeout(&mut buf, 5000) {
+            let buf = &buf[..n];
+            let mut hasher = Md5::new();
+            hasher.update(format!("{}{}", passwd, chl));
+            let r = hasher.finalize();
+            let hash = r.as_slice();
+            sendbuf.clear();
+            if buf.iter().eq(hash.iter()) {
+                sendbuf.put_u32(req);
+                self.session.send(&sendbuf);
+                info!("req sent {}", req);
+                return Ok(());
+            } else {
+                sendbuf.put_u32(0);
+                self.session.send(&sendbuf);
+                return Err(anyhow!("auth challenge fail"));
+            }
         }
-        let mut hasher = Md5::new();
-        hasher.update(format!("{}{}", passwd, chl));
-        let r = hasher.finalize();
-        let hash = r.as_slice();
-        sendbuf.clear();
-        if buf.iter().eq(hash.iter()) {
-            sendbuf.put_u32(req);
-            self.session.send(&sendbuf);
-            Ok(())
-        } else {
-            sendbuf.put_u32(0);
-            Err(anyhow!("auth challenge fail"))
-        }
+        Err(anyhow!("auth challenge time out"))
     }
 }
 
+pub enum PacketKind {
+    KeyerMessage,
+    StartATU,
+}
+#[derive(PartialEq)]
 pub enum MessageSND {
     SendPacket(u32),
     PosEdge(u8),
     NegEdge(u8),
     CloseSession,
+    StartATU,
 }
 
 pub struct WkSender {
@@ -111,16 +121,28 @@ impl WkSender {
         let mut slots = Vec::<u8>::new();
         let session_closed = Arc::new(AtomicBool::new(false));
         let closed = session_closed.clone();
-
         thread::spawn(move || loop {
             if let Ok(cmd) = rx.try_recv() {
                 match cmd {
                     MessageSND::CloseSession => {
                         session.close();
+                        closed.store(true, Ordering::Relaxed);
                         break;
                     }
+                    MessageSND::StartATU => {
+                        slots.clear();
+                        WkSender::encode(&mut buf, PacketKind::StartATU, 0, &slots);
+                        if let Ok(n) = session.send(&buf) {
+                            trace!("START ATU {} bytes pkt sent", n);
+                        } else {
+                            trace!("session closed by peer");
+                            session.close();
+                            closed.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
                     MessageSND::SendPacket(tm) => {
-                        WkSender::encode(&mut buf, tm, &slots);
+                        WkSender::encode(&mut buf, PacketKind::KeyerMessage, tm, &slots);
                         if let Ok(n) = session.send(&buf) {
                             trace!("{} bytes pkt sent at {} edges={}", n, tm, slots.len());
                             buf.clear();
@@ -136,13 +158,17 @@ impl WkSender {
                     MessageSND::NegEdge(s) => slots.push(s),
                 }
             }
+            if closed.load(Ordering::Relaxed) {
+                break;
+            }
             sleep(1);
         });
-
         Ok(WkSender { session_closed, tx })
     }
 
-    fn encode(buf: &mut BytesMut, tm: u32, slots: &[u8]) {
+    fn encode(buf: &mut BytesMut, cmd: PacketKind, tm: u32, slots: &[u8]) {
+        buf.clear();
+        buf.put_u8(cmd as u8);
         buf.put_u32(tm);
         if slots.len() > MAX_SLOTS {
             panic! {"Too many slots."}
@@ -163,11 +189,13 @@ impl WkSender {
     }
 }
 
+#[derive(PartialEq)]
 pub enum MessageRCV {
     Sync(u32),
     Keydown(u32),
     Keyup(u32),
     SessionClosed,
+    StartATU,
 }
 
 pub struct WkReceiver {
@@ -181,28 +209,32 @@ impl WkReceiver {
 
         let session_closed = Arc::new(AtomicBool::new(false));
         let closed = session_closed.clone();
+        let mut last_received = tick_count();
         thread::spawn(move || {
             let mut buf = [0u8; PKT_SIZE];
             loop {
-                {
-                    if let Ok(n) = session.recv(&mut buf) {
-                        if n > 0 {
-                            let slots = WkReceiver::decode(&buf);
-                            tx.send(slots).unwrap();
-                        }
-                    } else {
-                        let slots = vec![MessageRCV::SessionClosed];
+                if let Ok(n) = session.recv(&mut buf) {
+                    if n > 0 {
+                        let slots = WkReceiver::decode(&buf);
                         tx.send(slots).unwrap();
-                        trace!("session closed by peer");
-                        closed.store(true, Ordering::Relaxed);
-                        break;
+                        last_received = tick_count();
                     }
+                } else {
+                    let slots = vec![MessageRCV::SessionClosed];
+                    tx.send(slots).unwrap();
+                    trace!("session closed by peer");
+                    closed.store(true, Ordering::Relaxed);
+                }
 
-                    if closed.load(Ordering::Relaxed) {
-                        log::trace!("session closed by receiver");
-                        session.close();
-                        break;
-                    }
+                if tick_count() - last_received > SESSION_TIMEOUT {
+                    trace!("session timeout");
+                    closed.store(true, Ordering::Relaxed);
+                }
+
+                if closed.load(Ordering::Relaxed) {
+                    log::trace!("session closed by receiver");
+                    session.close();
+                    break;
                 }
                 sleep(1);
             }
@@ -216,10 +248,11 @@ impl WkReceiver {
 
     pub fn recv(&self) -> Result<Vec<MessageRCV>> {
         if !self.session_closed.load(Ordering::Relaxed) {
-            Ok(self.rx.recv().unwrap())
-        } else {
-            bail!("WkReceiver session closed")
+            if let Ok(s) = self.rx.recv() {
+                return Ok(s);
+            }
         }
+        bail!("WkReceiver session closed")
     }
 
     pub fn close(&self) {
@@ -232,10 +265,14 @@ impl WkReceiver {
 
     fn decode(buf: &[u8]) -> Vec<MessageRCV> {
         let mut buf = Cursor::new(buf);
+        let cmd = buf.get_u8();
         let tm = buf.get_u32();
         let len = buf.get_u8();
         let mut slots = Vec::new();
-        if len == 0 {
+
+        if cmd == PacketKind::StartATU as u8 {
+            slots.push(MessageRCV::StartATU)
+        } else if len == 0 {
             slots.push(MessageRCV::Sync(tm))
         } else {
             for _ in 0..len {
