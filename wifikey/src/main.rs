@@ -26,7 +26,7 @@ pub struct Config {
 }
 
 const STABLE_PERIOD: i32 = 1;
-const SLEEP_PERIOD: usize = 100; // Doze after empty packets sent.
+const SLEEP_PERIOD: usize = 36000; // Doze after empty packets sent.
 const PKT_INTERVAL: usize = 50; // Send keying packet every 50ms
 const KEEP_ALIVE: u32 = 15_000; // Send Keep Alive Packet every 15sec.
 
@@ -76,7 +76,7 @@ fn main() -> Result<()> {
     let mut slot_pos: usize = 0;
     let mut last_sent: u32 = tick_count();
     let mut now: u32 = 0;
-    let mut dozing = true;
+    let mut dozing = false;
     let mut sleep_count = 0;
     let mut edge_count: usize = 0;
     let mut last_stat: u32 = last_sent;

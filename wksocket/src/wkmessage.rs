@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
-use log::{error, info, trace};
+use log::{info, trace};
 use rand::random;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,7 +89,7 @@ impl WkAuth {
             } else {
                 sendbuf.put_u32(0);
                 self.session.send(&sendbuf);
-                return Err(anyhow!("auth challenge fail"));
+                return Err(anyhow!("auth challenge failed"));
             }
         }
         Err(anyhow!("auth challenge time out"))
