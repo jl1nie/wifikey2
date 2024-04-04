@@ -152,61 +152,78 @@ impl Morse {
         let serialport = self.port.clone();
         let j = thread::spawn(move || 'restart: loop {
             if rx_port.closed() {
-                log::info!("reciever loop exit");
+                log::info!("session closed");
                 break;
             }
-            let msgs = rx_port.recv().expect("recv channel error");
-            for m in msgs {
-                if let MessageRCV::Sync(rmt) = m {
-                    // Sync remote/local time
-                    rmt_epoch = rmt;
-                    epoch = tick_count()
-                } else {
-                    let mut tm = 0u32;
-                    let mut keydown = false;
+            if let Ok(msgs) = rx_port.recv() {
+                for m in msgs {
                     match m {
-                        MessageRCV::Keydown(rmt) => {
-                            tm = rmt;
-                            keydown = true;
-                        }
-                        MessageRCV::Keyup(rmt) => {
-                            tm = rmt;
-                            keydown = false;
-                        }
-                        MessageRCV::SessionClosed => {
-                            log::info!("got session close");
-                            let mut port = serialport.lock().expect("port write error");
-                            port.write_request_to_send(false).unwrap();
-                            rx_port.close();
-                            break 'restart;
-                        }
-                        MessageRCV::Sync(_) => {}
-                    }
-                    // Got Key mesg before sync
-                    if rmt_epoch == 0 {
-                        rmt_epoch = tm;
-                        epoch = tick_count()
-                    }
-
-                    // Calculate remote elapse time.
-                    elapse_rmt = tm - rmt_epoch;
-                    loop {
-                        // calculate local eplapse time
-                        elapse = tick_count() - epoch;
-                        if elapse >= elapse_rmt {
-                            let mut port = serialport.lock().expect("port write error");
-                            if keydown {
-                                port.write_request_to_send(true).unwrap();
-                                log::info!("down");
-                            } else {
-                                port.write_request_to_send(false).unwrap();
-                                log::info!("up");
+                        MessageRCV::Sync(rmt) => {
+                            // Sync remote/local time every 3 sec
+                            if rmt - rmt_epoch > 3000 {
+                                rmt_epoch = rmt;
+                                epoch = tick_count();
+                                log::info!("remote time sync");
                             }
+                        }
+                        MessageRCV::StartATU => {
+                            println!("---- START ATU ----");
+                            let mut port = serialport.lock().expect("port write error");
+                            port.write_data_terminal_ready(true).unwrap();
+                            sleep(500);
+                            port.write_data_terminal_ready(false).unwrap();
                             break;
                         }
-                        sleep(1);
+                        m => {
+                            let mut tm = 0u32;
+                            let mut keydown = false;
+                            match m {
+                                MessageRCV::Keydown(rmt) => {
+                                    tm = rmt;
+                                    keydown = true;
+                                }
+                                MessageRCV::Keyup(rmt) => {
+                                    tm = rmt;
+                                    keydown = false;
+                                }
+                                MessageRCV::SessionClosed => {
+                                    let mut port = serialport.lock().expect("port write error");
+                                    port.write_request_to_send(false).unwrap();
+                                    rx_port.close();
+                                    break 'restart;
+                                }
+                                _ => {}
+                            }
+                            // Got Key mesg before sync
+                            if rmt_epoch == 0 {
+                                rmt_epoch = tm;
+                                epoch = tick_count()
+                            }
+
+                            // Calculate remote elapse time.
+                            elapse_rmt = tm - rmt_epoch;
+                            loop {
+                                // calculate local eplapse time
+                                elapse = tick_count() - epoch;
+                                if elapse >= elapse_rmt {
+                                    let mut port = serialport.lock().expect("port write error");
+                                    if keydown {
+                                        port.write_request_to_send(true).unwrap();
+                                        log::info!("down");
+                                    } else {
+                                        port.write_request_to_send(false).unwrap();
+                                        log::info!("up");
+                                    }
+                                    break;
+                                }
+                                sleep(1);
+                            }
+                        }
                     }
                 }
+            } else {
+                log::info!("session closed");
+                break;
             }
         });
         j.join().unwrap();

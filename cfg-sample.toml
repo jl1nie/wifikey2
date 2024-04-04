@@ -2,3 +2,4 @@
 wifi_ssid = "SSID"
 wifi_passwd = "PASS"
 remote_server = "remoteFQDN:port"
+server_password = "password"

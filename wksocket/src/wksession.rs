@@ -1,4 +1,4 @@
-use anyhow::{bail, Error, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use log::{error, info, trace};
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
@@ -194,7 +194,7 @@ impl WkSession {
         session
     }
 
-    pub fn connect(peer: SocketAddr) -> Result<WkSession> {
+    pub fn connect(peer: SocketAddr) -> Result<Arc<WkSession>> {
         let udp = match peer.ip() {
             IpAddr::V4(..) => UdpSocket::bind("0.0.0.0:0")?,
             IpAddr::V6(..) => UdpSocket::bind("[::]:0")?,
@@ -223,7 +223,7 @@ impl WkSession {
                         }
                         let mut s = client_socket.lock().unwrap();
                         if s.waiting_conv() {
-                            let mut conv = kcp::get_conv(pkt);
+                            let conv = kcp::get_conv(pkt);
                             kcp::set_conv(pkt, conv);
                         }
                         if s.closed() {
@@ -232,7 +232,7 @@ impl WkSession {
                             s.input(pkt);
                         }
                     }
-                    Err(e) => {}
+                    Err(_) => {}
                 }
             }
         });
@@ -249,10 +249,10 @@ impl WkSession {
             }
         });
 
-        Ok(WkSession {
+        Ok(Arc::new(WkSession {
             socket,
             expire: Duration::from_secs(30),
-        })
+        }))
     }
 
     pub fn input(&self, buf: &[u8]) -> Result<()> {
@@ -268,6 +268,22 @@ impl WkSession {
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
         let mut socket = self.socket.lock().unwrap();
         socket.recv(buf)
+    }
+
+    pub fn recv_timeout(&self, buf: &mut [u8], timeout: u32) -> Result<usize> {
+        let now = tick_count();
+        while tick_count() - now < timeout {
+            let mut socket = self.socket.lock().unwrap();
+            if let Ok(n) = socket.recv(buf) {
+                if n > 0 {
+                    return Ok(n);
+                }
+                drop(socket);
+                sleep(1);
+                continue;
+            }
+        }
+        Err(anyhow!("recv timeout"))
     }
 
     pub fn close(&self) -> Result<()> {
@@ -317,8 +333,10 @@ impl WkListener {
                         if let Some((ref session, current_peer)) = sessions {
                             if peer == current_peer {
                                 info!("input current session {} bytes", n);
-                                session.input(pkt);
-                                continue;
+                                if !session.closed() {
+                                    session.input(pkt);
+                                    continue;
+                                }
                             } else {
                                 info!("close current session");
                                 session.close();

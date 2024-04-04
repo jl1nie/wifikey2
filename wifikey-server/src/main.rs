@@ -3,13 +3,15 @@ use log::{error, info, trace};
 use serialport::SerialPortInfo;
 use std::io::{stdin, stdout, Write};
 use std::net::ToSocketAddrs;
-use wksocket::{WkListener, WkReceiver};
+use wksocket::{WkAuth, WkListener, WkReceiver};
 
 mod keyer;
 use keyer::Morse;
 
 #[toml_cfg::toml_config]
 pub struct Config {
+    #[default("")]
+    server_password: &'static str,
     #[default("0.0.0.0:8080")]
     accept_port: &'static str,
 }
@@ -39,12 +41,20 @@ fn main() -> Result<()> {
         match listener.accept() {
             Ok((session, addr)) => {
                 println!("Accept new session from {}", addr);
+                let auth = WkAuth::new(session.clone());
+                if auth.challenge(CONFIG.server_password).is_err() {
+                    println!("Auth. Failed");
+                    session.close();
+                    continue;
+                }
+                println!("Auth.Success");
                 let mesg = WkReceiver::new(session)?;
                 let morse = Morse::new(port_name).unwrap();
                 morse.run(mesg);
+                println!("Sesstion timeout.");
             }
             Err(e) => {
-                trace!("err ={}", e)
+                trace!("err = {}", e)
             }
         }
     }
