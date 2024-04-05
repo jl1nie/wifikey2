@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use log::{info, trace};
 use serialport::SerialPort;
 use std::sync::{Arc, Mutex};
 use std::{thread, time};
@@ -150,9 +151,9 @@ impl Morse {
         let mut elapse = 0u32;
         let mut elapse_rmt = 0u32;
         let serialport = self.port.clone();
-        let j = thread::spawn(move || 'restart: loop {
+        let handle = thread::spawn(move || 'restart: loop {
             if rx_port.closed() {
-                log::info!("session closed");
+                info!("session closed");
                 break;
             }
             if let Ok(msgs) = rx_port.recv() {
@@ -163,7 +164,7 @@ impl Morse {
                             if rmt - rmt_epoch > 3000 {
                                 rmt_epoch = rmt;
                                 epoch = tick_count();
-                                log::info!("remote time sync");
+                                info!("Sync rmt={} local={}", rmt_epoch, epoch);
                             }
                         }
                         MessageRCV::StartATU => {
@@ -209,10 +210,10 @@ impl Morse {
                                     let mut port = serialport.lock().expect("port write error");
                                     if keydown {
                                         port.write_request_to_send(true).unwrap();
-                                        log::info!("down");
+                                        trace!("down");
                                     } else {
                                         port.write_request_to_send(false).unwrap();
-                                        log::info!("up");
+                                        trace!("up");
                                     }
                                     break;
                                 }
@@ -222,10 +223,10 @@ impl Morse {
                     }
                 }
             } else {
-                log::info!("session closed");
-                break;
+                info!("session closed");
+                break 'restart;
             }
         });
-        j.join().unwrap();
+        handle.join().unwrap();
     }
 }

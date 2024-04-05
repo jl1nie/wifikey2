@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{error, info, trace};
+use log::trace;
 use serialport::SerialPortInfo;
 use std::io::{stdin, stdout, Write};
 use std::net::ToSocketAddrs;
@@ -14,6 +14,8 @@ pub struct Config {
     server_password: &'static str,
     #[default("0.0.0.0:8080")]
     accept_port: &'static str,
+    #[default(0)]
+    sesami: u64,
 }
 
 fn main() -> Result<()> {
@@ -41,17 +43,18 @@ fn main() -> Result<()> {
         match listener.accept() {
             Ok((session, addr)) => {
                 println!("Accept new session from {}", addr);
-                let auth = WkAuth::new(session.clone());
-                if auth.challenge(CONFIG.server_password).is_err() {
-                    println!("Auth. Failed");
+                let Ok(_magic) =
+                    WkAuth::challenge(session.clone(), CONFIG.server_password, CONFIG.sesami)
+                else {
+                    println!("Auth. failure.");
                     session.close();
                     continue;
-                }
-                println!("Auth.Success");
+                };
+                println!("Auth. Success.");
                 let mesg = WkReceiver::new(session)?;
                 let morse = Morse::new(port_name).unwrap();
                 morse.run(mesg);
-                println!("Sesstion timeout.");
+                println!("Sesstion closed.");
             }
             Err(e) => {
                 trace!("err = {}", e)
@@ -67,7 +70,7 @@ fn select_port(ports: &[SerialPortInfo]) -> Result<&str> {
         println!("{}: {}", num, p.port_name);
     }
     loop {
-        print!("Select:");
+        print!("Select Port#:");
         stdout().flush().unwrap();
         stdin().read_line(&mut pstr)?;
         pnum = pstr.trim().parse()?;

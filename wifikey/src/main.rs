@@ -6,12 +6,12 @@ use esp_idf_sys::xTaskGetTickCountFromISR;
 use smart_leds::SmartLedsWrite;
 use ws2812_esp32_rmt_driver::{driver::color::LedPixelColorGrbw32, LedPixelEsp32Rmt, RGB8};
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::ToSocketAddrs;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use log::{error, info, trace};
-use wksocket::{sleep, tick_count, MessageSND, WkAuth, WkSender, WkSession, MAX_SLOTS, PKT_SIZE};
+use wksocket::{sleep, tick_count, MessageSND, WkAuth, WkSender, WkSession, MAX_SLOTS};
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -23,12 +23,14 @@ pub struct Config {
     remote_server: &'static str,
     #[default("password")]
     server_password: &'static str,
+    #[default(0)]
+    sesami: u64,
 }
 
 const STABLE_PERIOD: i32 = 1;
-const SLEEP_PERIOD: usize = 36000; // Doze after empty packets sent.
+const SLEEP_PERIOD: usize = 18_000; // Doze after empty packets sent.
 const PKT_INTERVAL: usize = 50; // Send keying packet every 50ms
-const KEEP_ALIVE: u32 = 15_000; // Send Keep Alive Packet every 15sec.
+const KEEP_ALIVE: u32 = 5_000; // Send Keep Alive Packet every 5sec.
 
 static TRIGGER: AtomicBool = AtomicBool::new(false);
 static TICKCOUNT: AtomicU32 = AtomicU32::new(0);
@@ -69,7 +71,7 @@ fn main() -> Result<()> {
     unsafe { keyinput.subscribe(gpio_key_callback).unwrap() };
     keyinput.enable_interrupt().unwrap();
 
-    let mut button = PinDriver::input(peripherals.pins.gpio39)?;
+    let button = PinDriver::input(peripherals.pins.gpio39)?;
 
     let mut pkt_count: usize = 0;
     let mut slot_count: usize = 0;
@@ -91,16 +93,15 @@ fn main() -> Result<()> {
     info!("Remote Server ={}", remote_addr);
 
     loop {
-        let mut session = WkSession::connect(remote_addr).unwrap();
-
-        let auth = WkAuth::new(session.clone());
-        if auth.response(CONFIG.server_password).is_err() {
-            println!("Auth. Failed");
+        let session = WkSession::connect(remote_addr).unwrap();
+        let Ok(_magic) = WkAuth::response(session.clone(), CONFIG.server_password, CONFIG.sesami)
+        else {
+            info!("Auth. failed.");
             session.close();
-            sleep(10_000);
+            sleep(5000);
             continue;
-        }
-
+        };
+        info!("Auth. Success");
         let mut sender = WkSender::new(session).unwrap();
         loop {
             sleep(1);
@@ -112,7 +113,7 @@ fn main() -> Result<()> {
                     break;
                 }
                 last_stat = now;
-                info!("[{}] PKT={} EDGE={}", last_stat, pkt_count, edge_count);
+                trace!("[{}] PKT={} EDGE={}", last_stat, pkt_count, edge_count);
                 edge_count = 0;
                 pkt_count = 0;
             }

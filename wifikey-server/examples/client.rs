@@ -1,6 +1,5 @@
 use anyhow::Result;
 use std::net::ToSocketAddrs;
-use std::sync::Arc;
 use wksocket::{sleep, tick_count};
 use wksocket::{MessageSND, WkSender};
 use wksocket::{WkAuth, WkSession};
