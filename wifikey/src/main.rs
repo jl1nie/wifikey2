@@ -1,17 +1,18 @@
 use anyhow::Result;
 
+use bytes::buf;
 use esp_idf_hal::{delay::FreeRtos, gpio::*, peripherals::Peripherals};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::peripheral, wifi::*};
 use esp_idf_sys::xTaskGetTickCountFromISR;
 use smart_leds::SmartLedsWrite;
 use ws2812_esp32_rmt_driver::{driver::color::LedPixelColorGrbw32, LedPixelEsp32Rmt, RGB8};
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket};
+use std::net::ToSocketAddrs;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use log::{error, info, trace};
-use wksocket::{sleep, tick_count, MessageSND, WkAuth, WkSender, WkSession, MAX_SLOTS, PKT_SIZE};
+use wksocket::{sleep, tick_count, MessageSND, WkAuth, WkSender, WkSession, MAX_SLOTS};
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -23,12 +24,14 @@ pub struct Config {
     remote_server: &'static str,
     #[default("password")]
     server_password: &'static str,
+    #[default(0)]
+    sesami: u64,
 }
 
 const STABLE_PERIOD: i32 = 1;
-const SLEEP_PERIOD: usize = 100; // Doze after empty packets sent.
+const SLEEP_PERIOD: usize = 18_000; // Doze after empty packets sent.
 const PKT_INTERVAL: usize = 50; // Send keying packet every 50ms
-const KEEP_ALIVE: u32 = 15_000; // Send Keep Alive Packet every 15sec.
+const KEEP_ALIVE: u32 = 5_000; // Send Keep Alive Packet every 5sec.
 
 static TRIGGER: AtomicBool = AtomicBool::new(false);
 static TICKCOUNT: AtomicU32 = AtomicU32::new(0);
@@ -47,36 +50,63 @@ fn main() -> Result<()> {
     let peripherals = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
 
+    #[cfg(board = "m5atom")]
     let mut led = LedPixelEsp32Rmt::<RGB8, LedPixelColorGrbw32>::new(0, 27).unwrap();
+    #[cfg(board = "m5atom")]
     let empty_color = std::iter::repeat(RGB8::default()).take(1);
+    #[cfg(board = "m5atom")]
     let red_color = std::iter::repeat(RGB8 { r: 5, g: 0, b: 0 }).take(1);
 
+    #[cfg(board = "esp32-wrover")]
+    let mut led = PinDriver::output(peripherals.pins.gpio16)?;
+
+    #[cfg(board = "m5atom")]
     led.write(red_color.clone()).unwrap();
+    #[cfg(board = "esp32-wrover")]
+    led.set_high().unwrap();
+
     let _wifi = wifi(peripherals.modem, sysloop.clone());
 
     if _wifi.is_err() {
+        #[cfg(board = "m5atom")]
         led.write(empty_color.clone()).unwrap();
         FreeRtos::delay_ms(3000);
         unsafe {
             esp_idf_sys::esp_restart();
         }
     };
+    #[cfg(board = "m5atom")]
     led.write(empty_color.clone()).unwrap();
+    #[cfg(board = "esp32-wrover")]
+    led.set_low().unwrap();
 
-    let mut keyinput = PinDriver::input(peripherals.pins.gpio19)?;
+    #[cfg(board = "m5atom")]
+    let keyerpin = peripherals.pins.gpio19;
+    #[cfg(board = "esp32-wrover")]
+    let keyerpin = peripherals.pins.gpio4;
+
+    let mut keyinput = PinDriver::input(keyerpin)?;
+
     keyinput.set_pull(Pull::Up).unwrap();
     keyinput.set_interrupt_type(InterruptType::AnyEdge).unwrap();
     unsafe { keyinput.subscribe(gpio_key_callback).unwrap() };
     keyinput.enable_interrupt().unwrap();
 
-    let mut button = PinDriver::input(peripherals.pins.gpio39)?;
+    #[cfg(board = "m5atom")]
+    let buttonpin = peripherals.pins.gpio39;
+    #[cfg(board = "esp32-wrover")]
+    let buttonpin = peripherals.pins.gpio12;
+
+    let mut button = PinDriver::input(buttonpin)?;
+    #[cfg(board = "esp32-wrover")]
+    button.set_pull(Pull::Up);
 
     let mut pkt_count: usize = 0;
     let mut slot_count: usize = 0;
     let mut slot_pos: usize = 0;
     let mut last_sent: u32 = tick_count();
     let mut now: u32 = 0;
-    let mut dozing = true;
+    let mut dozing = false;
     let mut sleep_count = 0;
     let mut edge_count: usize = 0;
     let mut last_stat: u32 = last_sent;
@@ -91,28 +121,27 @@ fn main() -> Result<()> {
     info!("Remote Server ={}", remote_addr);
 
     loop {
-        let mut session = WkSession::connect(remote_addr).unwrap();
-
-        let auth = WkAuth::new(session.clone());
-        if auth.response(CONFIG.server_password).is_err() {
-            println!("Auth. Failed");
+        let session = WkSession::connect(remote_addr).unwrap();
+        let Ok(_magic) = WkAuth::response(session.clone(), CONFIG.server_password, CONFIG.sesami)
+        else {
             session.close();
-            sleep(10_000);
+            info!("Auth. failed.");
+            sleep(5000);
             continue;
-        }
-
+        };
+        info!("Auth. Success");
         let mut sender = WkSender::new(session).unwrap();
         loop {
             sleep(1);
             now = tick_count();
 
-            if dozing && now - last_stat > KEEP_ALIVE {
+            if KEEP_ALIVE != 0 && dozing && now - last_stat > KEEP_ALIVE {
                 if sender.send(MessageSND::SendPacket(now)).is_err() {
                     info!("connection closed by peer.");
                     break;
                 }
                 last_stat = now;
-                info!("[{}] PKT={} EDGE={}", last_stat, pkt_count, edge_count);
+                trace!("[{}] PKT={} EDGE={}", last_stat, pkt_count, edge_count);
                 edge_count = 0;
                 pkt_count = 0;
             }
@@ -141,10 +170,17 @@ fn main() -> Result<()> {
 
             if button.is_low() {
                 info!("Start ATU");
+                #[cfg(board = "m5atom")]
                 led.write(red_color.clone()).unwrap();
+                #[cfg(board = "esp32-wrover")]
+                led.set_high().unwrap();
+
                 sender.send(MessageSND::StartATU).unwrap();
                 sleep(500);
+                #[cfg(board = "m5atom")]
                 led.write(empty_color.clone()).unwrap();
+                #[cfg(board = "esp32-wrover")]
+                led.set_low().unwrap();
             }
 
             if TRIGGER.load(Ordering::Relaxed)
@@ -168,13 +204,19 @@ fn main() -> Result<()> {
                     last_sent = now;
                     slot_count = 0;
                 } else if keyinput.is_high() {
+                    #[cfg(board = "m5atom")]
                     led.write(empty_color.clone()).unwrap();
+                    #[cfg(board = "esp32-wrover")]
+                    led.set_low().unwrap();
                     // Add Pos Edge
                     sender.send(MessageSND::PosEdge(slot_pos as u8));
                     slot_count += 1;
                     edge_count += 1;
                 } else {
+                    #[cfg(board = "m5atom")]
                     led.write(red_color.clone()).unwrap();
+                    #[cfg(board = "esp32-wrover")]
+                    led.set_high().unwrap();
                     // Add NEG Edge
                     sender.send(MessageSND::NegEdge(slot_pos as u8));
                     edge_count += 1;

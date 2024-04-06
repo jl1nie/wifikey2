@@ -1,6 +1,6 @@
 pub use self::{
-    wkmessage::{MessageRCV, MessageSND, WkAuth, WkReceiver, WkSender, MAX_SLOTS, PKT_SIZE},
-    wksession::{WkListener, WkSession},
+    wkmessage::{MessageRCV, MessageSND, WkReceiver, WkSender, MAX_SLOTS},
+    wksession::{WkAuth, WkListener, WkSession, PKT_SIZE},
     wkutil::{sleep, tick_count},
 };
 

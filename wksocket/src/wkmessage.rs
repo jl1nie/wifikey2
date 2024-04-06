@@ -1,100 +1,15 @@
-use anyhow::{anyhow, bail, Result};
+use crate::wksession::{WkSession, PKT_SIZE};
+use crate::wkutil::sleep;
+use anyhow::{anyhow, Result};
 use bytes::{Buf, BufMut, BytesMut};
-use log::{error, info, trace};
-use rand::random;
+use log::trace;
 use std::io::Cursor;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 
-use crate::tick_count;
-use crate::wksession::WkSession;
-use crate::wkutil::sleep;
-use md5::{Digest, Md5};
-
-pub const PKT_SIZE: usize = 128;
 pub const MAX_SLOTS: usize = 128;
-pub const SESSION_TIMEOUT: u32 = 180_000;
-
-pub struct WkAuth {
-    session: Arc<WkSession>,
-}
-
-impl WkAuth {
-    pub fn new(session: Arc<WkSession>) -> Self {
-        WkAuth { session }
-    }
-
-    pub fn response(&self, passwd: &str) -> Result<()> {
-        let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
-        let mut buf = [0u8; PKT_SIZE];
-
-        let req = random();
-        sendbuf.put_u32(req);
-        self.session.send(&sendbuf);
-
-        if self.session.recv_timeout(&mut buf, 5000).is_err() {
-            return Err(anyhow!("auth response time out"));
-        }
-        let mut rcvbuf = Cursor::new(buf);
-        let salt = rcvbuf.get_u32();
-
-        let mut hasher = Md5::new();
-        let hashstr = format!("{}{}", passwd, salt);
-        hasher.update(&hashstr);
-        let result = hasher.finalize();
-        let mut buf = &mut buf[..16];
-        buf.copy_from_slice(&result);
-        self.session.send(&buf);
-
-        if self.session.recv_timeout(&mut buf, 5000).is_err() {
-            return Err(anyhow!("auth response time out"));
-        }
-        let mut rcvbuf = Cursor::new(buf);
-        let res = rcvbuf.get_u32();
-        if req == res {
-            Ok(())
-        } else {
-            Err(anyhow!("auth response failed"))
-        }
-    }
-
-    pub fn challenge(&self, passwd: &str) -> Result<()> {
-        let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
-        let mut buf = [0u8; PKT_SIZE];
-
-        if self.session.recv_timeout(&mut buf, 5000).is_err() {
-            return Err(anyhow!("auth challenge time out"));
-        }
-        let mut rcvbuf = Cursor::new(buf);
-        let req = rcvbuf.get_u32();
-
-        let chl = random();
-        sendbuf.put_u32(chl);
-        self.session.send(&sendbuf);
-
-        if let Ok(n) = self.session.recv_timeout(&mut buf, 5000) {
-            let buf = &buf[..n];
-            let mut hasher = Md5::new();
-            hasher.update(format!("{}{}", passwd, chl));
-            let r = hasher.finalize();
-            let hash = r.as_slice();
-            sendbuf.clear();
-            if buf.iter().eq(hash.iter()) {
-                sendbuf.put_u32(req);
-                self.session.send(&sendbuf);
-                info!("req sent {}", req);
-                return Ok(());
-            } else {
-                sendbuf.put_u32(0);
-                self.session.send(&sendbuf);
-                return Err(anyhow!("auth challenge fail"));
-            }
-        }
-        Err(anyhow!("auth challenge time out"))
-    }
-}
 
 pub enum PacketKind {
     KeyerMessage,
@@ -184,7 +99,7 @@ impl WkSender {
             self.tx.send(msg);
             Ok(())
         } else {
-            bail!("session closed by peer")
+            Err(anyhow!("session closed by peer"))
         }
     }
 }
@@ -209,7 +124,6 @@ impl WkReceiver {
 
         let session_closed = Arc::new(AtomicBool::new(false));
         let closed = session_closed.clone();
-        let mut last_received = tick_count();
         thread::spawn(move || {
             let mut buf = [0u8; PKT_SIZE];
             loop {
@@ -217,22 +131,15 @@ impl WkReceiver {
                     if n > 0 {
                         let slots = WkReceiver::decode(&buf);
                         tx.send(slots).unwrap();
-                        last_received = tick_count();
                     }
                 } else {
                     let slots = vec![MessageRCV::SessionClosed];
                     tx.send(slots).unwrap();
-                    trace!("session closed by peer");
-                    closed.store(true, Ordering::Relaxed);
-                }
-
-                if tick_count() - last_received > SESSION_TIMEOUT {
-                    trace!("session timeout");
                     closed.store(true, Ordering::Relaxed);
                 }
 
                 if closed.load(Ordering::Relaxed) {
-                    log::trace!("session closed by receiver");
+                    trace!("session closed.");
                     session.close();
                     break;
                 }
@@ -252,7 +159,7 @@ impl WkReceiver {
                 return Ok(s);
             }
         }
-        bail!("WkReceiver session closed")
+        Err(anyhow!("session closed"))
     }
 
     pub fn close(&self) {
@@ -273,8 +180,10 @@ impl WkReceiver {
         if cmd == PacketKind::StartATU as u8 {
             slots.push(MessageRCV::StartATU)
         } else if len == 0 {
+            trace!("Sync {}", tm);
             slots.push(MessageRCV::Sync(tm))
         } else {
+            trace!("Edges {} {} slots", tm, len);
             for _ in 0..len {
                 let d = buf.get_u8();
                 let tm = tm + (d & 0x7fu8) as u32;
