@@ -257,6 +257,7 @@ impl RigControl {
 
         self.set_mode(Mode::CWu)?;
         self.set_power(10)?;
+        sleep(Duration::from_millis(500));
 
         self.assert_key(true);
         sleep(Duration::from_millis(100));

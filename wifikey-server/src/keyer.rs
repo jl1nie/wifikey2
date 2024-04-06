@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::thread;
 use wksocket::{sleep, tick_count, MessageRCV, WkReceiver};
 
+pub const MAX_ASSERT_DURAION: u32 = 5000;
 pub struct Morse {
     rigcontrol: Arc<RigControl>,
     ratio: u32,
@@ -143,6 +144,7 @@ impl Morse {
         let mut epoch = 0u32;
         let mut elapse = 0u32;
         let mut elapse_rmt = 0u32;
+        let mut asserted = 0u32;
         let rigcon = self.rigcontrol.clone();
 
         let handle = thread::spawn(move || 'restart: loop {
@@ -196,13 +198,16 @@ impl Morse {
                             elapse_rmt = tm - rmt_epoch;
                             loop {
                                 // calculate local eplapse time
-                                elapse = tick_count() - epoch;
+                                let now = tick_count();
+                                elapse = now - epoch;
                                 if elapse >= elapse_rmt {
                                     if keydown {
                                         rigcon.assert_key(true);
+                                        asserted = now;
                                         trace!("down");
                                     } else {
                                         rigcon.assert_key(false);
+                                        asserted = 0;
                                         trace!("up");
                                     }
                                     break;
@@ -211,6 +216,10 @@ impl Morse {
                             }
                         }
                     }
+                }
+                if asserted != 0 && tick_count() - asserted > MAX_ASSERT_DURAION {
+                    rigcon.assert_key(false);
+                    asserted = 0;
                 }
             } else {
                 info!("session closed");

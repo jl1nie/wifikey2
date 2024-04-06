@@ -72,6 +72,7 @@ impl KcpSocket {
             KcpMode::Fast => {
                 kcp.set_mtu(MTU_SIZE).unwrap();
                 kcp.set_nodelay(true, 10, 1, true);
+                kcp.set_maximum_resend_times(10);
             }
         }
 
@@ -100,7 +101,8 @@ impl KcpSocket {
     }
 
     pub fn send(&mut self, buf: &[u8]) -> Result<usize> {
-        if self.closed {
+        if self.closed || self.kcp.is_dead_link() {
+            self.closed = true;
             bail!("connection closed.");
         }
         let n = self.kcp.send(buf).unwrap();
@@ -113,7 +115,6 @@ impl KcpSocket {
         if self.closed {
             bail!("connection closed.");
         }
-
         match self.kcp.recv(buf) {
             Ok(n) => {
                 self.last_update = tick_count();
@@ -203,7 +204,7 @@ impl WkSession {
         let client_socket = session.socket.clone();
         let client_session = session.clone();
 
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             let buf = &mut [0u8; PKT_SIZE];
             loop {
                 if client_session.closed() {
@@ -224,12 +225,10 @@ impl WkSession {
                         continue;
                     }
                     let mut s = client_socket.lock().unwrap();
-
                     if s.waiting_conv() {
                         let conv = kcp::get_conv(pkt);
                         kcp::set_conv(pkt, conv);
                     }
-
                     if s.closed() {
                         break;
                     } else {
@@ -380,7 +379,7 @@ impl WkAuth {
         sendbuf.put_u64(sesami);
         session.send(&sendbuf)?;
 
-        if session.recv_timeout(&mut buf, 3000).is_err() {
+        if session.recv_timeout(&mut buf, 1000).is_err() {
             bail!("auth response time out");
         }
 
@@ -389,7 +388,7 @@ impl WkAuth {
         WkAuth::hashstr(&mut buf, &format!("{}{}", passwd, salt));
         session.send(&buf)?;
 
-        if session.recv_timeout(&mut buf, 3000).is_err() {
+        if session.recv_timeout(&mut buf, 1000).is_err() {
             bail!("auth response time out");
         }
         let mut rcvbuf = Cursor::new(buf);
@@ -405,10 +404,11 @@ impl WkAuth {
         let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
         let mut buf = [0u8; PKT_SIZE];
 
-        if session.recv_timeout(&mut buf, 3000).is_err() {
+        if session.recv_timeout(&mut buf, 6000).is_err() {
             trace!("auth challenge timeout");
             bail!("auth challenge timeout");
         }
+
         let mut rcvbuf = Cursor::new(buf);
         if sesami != rcvbuf.get_u64() {
             trace!("can not open sesami");
@@ -419,7 +419,7 @@ impl WkAuth {
         sendbuf.put_u32(chl);
         session.send(&sendbuf);
 
-        if session.recv_timeout(&mut buf, 3000).is_err() {
+        if session.recv_timeout(&mut buf, 1000).is_err() {
             info!("challenge response timeout");
             bail!("auth challenge time out");
         };

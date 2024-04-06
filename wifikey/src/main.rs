@@ -29,7 +29,7 @@ pub struct Config {
 }
 
 const STABLE_PERIOD: i32 = 1;
-const SLEEP_PERIOD: usize = 100; //18_000; // Doze after empty packets sent.
+const SLEEP_PERIOD: usize = 18_000; // Doze after empty packets sent.
 const PKT_INTERVAL: usize = 50; // Send keying packet every 50ms
 const KEEP_ALIVE: u32 = 5_000; // Send Keep Alive Packet every 5sec.
 
@@ -124,8 +124,8 @@ fn main() -> Result<()> {
         let session = WkSession::connect(remote_addr).unwrap();
         let Ok(_magic) = WkAuth::response(session.clone(), CONFIG.server_password, CONFIG.sesami)
         else {
-            info!("Auth. failed.");
             session.close();
+            info!("Auth. failed.");
             sleep(5000);
             continue;
         };
