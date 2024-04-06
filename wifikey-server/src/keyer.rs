@@ -1,12 +1,12 @@
-use anyhow::{Context, Result};
+use crate::rigcontrol::RigControl;
+use anyhow::Result;
 use log::{info, trace};
-use serialport::SerialPort;
-use std::sync::{Arc, Mutex};
-use std::{thread, time};
+use std::sync::Arc;
+use std::thread;
 use wksocket::{sleep, tick_count, MessageRCV, WkReceiver};
 
 pub struct Morse {
-    port: Arc<Mutex<Box<dyn SerialPort>>>,
+    rigcontrol: Arc<RigControl>,
     ratio: u32,
     letter_space: u32,
     word_space: u32,
@@ -17,15 +17,9 @@ pub struct Morse {
 impl Morse {
     const MSPERWPM: u32 = 1200; /* PARIS = 50 tick */
 
-    pub fn new(port_name: &str) -> Result<Self> {
-        let port = Arc::new(Mutex::new(
-            serialport::new(port_name, 115_200)
-                .timeout(time::Duration::from_micros(10))
-                .open()
-                .with_context(|| format!("faild to open port {}", &port_name))?,
-        ));
+    pub fn new(rigcontrol: Arc<RigControl>) -> Result<Self> {
         Ok(Self {
-            port,
+            rigcontrol,
             ratio: 3,
             word_space: 7,
             letter_space: 3,
@@ -100,11 +94,10 @@ impl Morse {
     }
 
     #[allow(dead_code)]
-    fn assert(&mut self, tick: u32) {
-        let mut port = self.port.lock().expect("port write error");
-        port.write_request_to_send(true).unwrap();
+    fn assert(&self, tick: u32) {
+        self.rigcontrol.assert_key(true);
         sleep(tick);
-        port.write_request_to_send(false).unwrap();
+        self.rigcontrol.assert_key(false);
     }
 
     #[allow(dead_code)]
@@ -150,7 +143,8 @@ impl Morse {
         let mut epoch = 0u32;
         let mut elapse = 0u32;
         let mut elapse_rmt = 0u32;
-        let serialport = self.port.clone();
+        let rigcon = self.rigcontrol.clone();
+
         let handle = thread::spawn(move || 'restart: loop {
             if rx_port.closed() {
                 info!("session closed");
@@ -169,10 +163,9 @@ impl Morse {
                         }
                         MessageRCV::StartATU => {
                             println!("---- START ATU ----");
-                            let mut port = serialport.lock().expect("port write error");
-                            port.write_data_terminal_ready(true).unwrap();
-                            sleep(500);
-                            port.write_data_terminal_ready(false).unwrap();
+                            if let Err(e) = rigcon.start_atu() {
+                                info!("Start ATU error = {} ", e);
+                            };
                             break;
                         }
                         m => {
@@ -188,9 +181,7 @@ impl Morse {
                                     keydown = false;
                                 }
                                 MessageRCV::SessionClosed => {
-                                    let mut port = serialport.lock().expect("port write error");
-                                    port.write_request_to_send(false).unwrap();
-                                    rx_port.close();
+                                    rigcon.assert_key(false);
                                     break 'restart;
                                 }
                                 _ => {}
@@ -207,12 +198,11 @@ impl Morse {
                                 // calculate local eplapse time
                                 elapse = tick_count() - epoch;
                                 if elapse >= elapse_rmt {
-                                    let mut port = serialport.lock().expect("port write error");
                                     if keydown {
-                                        port.write_request_to_send(true).unwrap();
+                                        rigcon.assert_key(true);
                                         trace!("down");
                                     } else {
-                                        port.write_request_to_send(false).unwrap();
+                                        rigcon.assert_key(false);
                                         trace!("up");
                                     }
                                     break;

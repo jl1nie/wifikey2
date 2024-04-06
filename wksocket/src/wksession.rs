@@ -1,5 +1,5 @@
 use crate::wkutil::{sleep, tick_count};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
 use kcp::Kcp;
 use log::{info, trace};
@@ -7,7 +7,7 @@ use md5::{Digest, Md5};
 use rand::random;
 use std::io::{self, Cursor, Write};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -101,7 +101,7 @@ impl KcpSocket {
 
     pub fn send(&mut self, buf: &[u8]) -> Result<usize> {
         if self.closed {
-            return Err(anyhow!("connection closed."));
+            bail!("connection closed.");
         }
         let n = self.kcp.send(buf).unwrap();
         self.last_update = tick_count();
@@ -111,7 +111,7 @@ impl KcpSocket {
 
     pub fn recv(&mut self, buf: &mut [u8]) -> Result<usize> {
         if self.closed {
-            return Err(anyhow!("connection closed."));
+            bail!("connection closed.");
         }
 
         match self.kcp.recv(buf) {
@@ -270,7 +270,7 @@ impl WkSession {
                 continue;
             }
         }
-        Err(anyhow!("recv timeout"))
+        bail!("recv timeout")
     }
 
     pub fn close(&self) -> Result<()> {
@@ -381,7 +381,7 @@ impl WkAuth {
         session.send(&sendbuf)?;
 
         if session.recv_timeout(&mut buf, 3000).is_err() {
-            return Err(anyhow!("auth response time out"));
+            bail!("auth response time out");
         }
 
         let mut rcvbuf = Cursor::new(buf);
@@ -390,7 +390,7 @@ impl WkAuth {
         session.send(&buf)?;
 
         if session.recv_timeout(&mut buf, 3000).is_err() {
-            return Err(anyhow!("auth response time out"));
+            bail!("auth response time out");
         }
         let mut rcvbuf = Cursor::new(buf);
         let res = rcvbuf.get_u32();
@@ -407,12 +407,12 @@ impl WkAuth {
 
         if session.recv_timeout(&mut buf, 3000).is_err() {
             trace!("auth challenge timeout");
-            return Err(anyhow!("auth challenge timeout"));
+            bail!("auth challenge timeout");
         }
         let mut rcvbuf = Cursor::new(buf);
         if sesami != rcvbuf.get_u64() {
             trace!("can not open sesami");
-            return Err(anyhow!("auth challenge timeout"));
+            bail!("auth challenge timeout");
         }
 
         let chl = random();
@@ -421,7 +421,7 @@ impl WkAuth {
 
         if session.recv_timeout(&mut buf, 3000).is_err() {
             info!("challenge response timeout");
-            return Err(anyhow!("auth challenge time out"));
+            bail!("auth challenge time out");
         };
 
         let response = &buf[..16];
@@ -438,7 +438,7 @@ impl WkAuth {
             Ok(res)
         } else {
             info!("challenge fail {:?} {:?}", response, challenge);
-            Err(anyhow!("auth challenge failed"))
+            bail!("auth challenge failed")
         }
     }
 }

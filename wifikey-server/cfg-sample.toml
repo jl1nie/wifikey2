@@ -1,3 +1,6 @@
-[wifikey-server]
-server_password = "password"
+server_password = "passwd"
 accept_port = "0.0.0.0:8080"
+sesami = 0
+rigcontrol_port = "COM1"
+keying_port = "COM2"
+use_rts_for_keying = true
