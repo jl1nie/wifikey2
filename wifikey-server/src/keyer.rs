@@ -165,7 +165,7 @@ impl Morse {
                         }
                         MessageRCV::StartATU => {
                             println!("---- START ATU ----");
-                            if let Err(e) = rigcon.start_atu() {
+                            if let Err(e) = rigcon.start_atu_with_rigcontrol() {
                                 info!("Start ATU error = {} ", e);
                             };
                             break;
