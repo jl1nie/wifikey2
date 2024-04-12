@@ -12,6 +12,7 @@ kcp = "0.5"
 bytes = "1.1"
 log = { version = "0.4", default-features = false }
 time = "0.3"
+chrono = "0.4"
 config = "0.14.0"
 env_logger = "*"
 wksocket = { path = "../wksocket" }
