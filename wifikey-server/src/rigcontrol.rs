@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use log::{info, trace};
+use log::info;
 use serialport::SerialPort;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
@@ -37,7 +37,6 @@ impl RigControl {
                 .open()
                 .with_context(|| format!("faild to open port {} for keying.", &keying_port))?,
         ));
-
         let rigcontrol_port = Arc::new(Mutex::new(
             serialport::new(rigcontrol_port, 4800)
                 .timeout(Duration::from_millis(100))
@@ -48,7 +47,6 @@ impl RigControl {
                     format!("faild to open port {} for rigcontrol.", &rigcontrol_port)
                 })?,
         ));
-
         Ok(Self {
             keying_port,
             rigcontrol_port,
@@ -76,22 +74,29 @@ impl RigControl {
     }
 
     fn cat_write(&self, command: &str) -> Result<usize> {
-        trace!("cat write {}", command);
-        let mut port = self.rigcontrol_port.lock().unwrap();
-        let n = port.write(command.as_bytes())?;
+        info!("cat write {}", command);
+        let Ok(ref mut rigport) = self.rigcontrol_port.lock() else {
+            bail!("rig control port lock failed")
+        };
+        let n = rigport.write(command.as_bytes())?;
         Ok(n)
     }
 
     fn cat_read(&self, command: &str) -> Result<String> {
-        let mut port = self.rigcontrol_port.lock().unwrap();
-
-        let n = port.write(command.as_bytes())?;
-
-        let buf = &mut [0u8; 128];
-        let m = port.read(buf)?;
+        let Ok(mut rigport) = self.rigcontrol_port.lock() else {
+            bail!("rig control port lock failed")
+        };
+        rigport.clear(serialport::ClearBuffer::Input)?;
+        let n = rigport.write(command.as_bytes())?;
+        let buf = &mut [0u8; 1024];
+        let m = rigport.read(buf)?;
         let buf = String::from_utf8_lossy(&buf[..m]).to_string();
-        trace!("cat cmd {}({}) read {}({})", command, n, buf, m);
-        Ok(buf)
+        let Some(idx) = buf.find(&command[..2]) else {
+            bail!("cat read error buffer ={}", buf)
+        };
+        let res = buf[idx..].to_string();
+        info!("cat cmd {}({}) read {}({})", command, n, res, m - idx);
+        Ok(res)
     }
 
     #[allow(dead_code)]
@@ -102,11 +107,6 @@ impl RigControl {
         }
 
         let fstr = self.cat_read(cmd)?;
-
-        if fstr.len() != 12 {
-            bail!("CAT read freq failed. {}({})", fstr, fstr.len())
-        };
-
         let Ok(freq) = fstr[2..11].parse() else {
             bail!("CAT read freq failed. {}", &fstr[2..11])
         };
@@ -129,25 +129,21 @@ impl RigControl {
     }
 
     #[allow(dead_code)]
+    pub fn get_power(&self) -> Result<usize> {
+        let pstr = self.cat_read("PC;")?;
+        let Ok(pwr) = pstr[2..5].parse() else {
+            bail!("CAT read power failed. {}", &pstr[2..5])
+        };
+        Ok(pwr)
+    }
+
+    #[allow(dead_code)]
     pub fn set_power(&self, power: usize) -> Result<()> {
         let power @ 5..=100 = power else {
             bail!("Parameter out of range: power ={}", power)
         };
         self.cat_write(&format!("PC{:0>3};", power))?;
         Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub fn get_power(&self) -> Result<usize> {
-        let pstr = self.cat_read("PC;")?;
-        if pstr.len() != 6 {
-            bail!("CAT read power failed. {}({})", pstr, pstr.len())
-        };
-
-        let Ok(pwr) = pstr[2..5].parse() else {
-            bail!("CAT read power failed. {}", &pstr[2..5])
-        };
-        Ok(pwr)
     }
 
     #[allow(dead_code)]
@@ -231,9 +227,6 @@ impl RigControl {
     #[allow(dead_code)]
     pub fn get_mode(&self) -> Result<Mode> {
         let mstr = self.cat_read("MD0;")?;
-        if mstr.len() != 5 {
-            bail!("CAT read fail. {}({})", mstr, mstr.len())
-        };
         let Ok(mode) = self.str2mode(mstr.chars().nth(3).unwrap()) else {
             bail!("CAT read fail. {}", mstr)
         };
@@ -242,16 +235,19 @@ impl RigControl {
 
     pub fn read_swr(&self) -> Result<usize> {
         let mstr = self.cat_read("RM6;")?;
-        if mstr.len() != 10 {
-            bail!("CAT read fail. {}({})", mstr, mstr.len())
-        };
         let Ok(swr) = mstr[3..6].parse() else {
             bail!("CAT read fail. swr={}", mstr)
         };
         Ok(swr)
     }
 
-    pub fn start_atu(&self) -> Result<()> {
+    pub fn start_atu(&self) {
+        self.assert_atu(true);
+        sleep(Duration::from_millis(500));
+        self.assert_atu(false);
+    }
+
+    pub fn start_atu_with_rigcontrol(&self) -> Result<usize> {
         let saved_power = self.get_power()?;
         let saved_mode = self.get_mode()?;
 
@@ -262,33 +258,34 @@ impl RigControl {
         self.assert_key(true);
         sleep(Duration::from_millis(100));
 
-        self.assert_atu(true);
-        sleep(Duration::from_millis(500));
-        self.assert_atu(false);
+        self.start_atu();
 
         let start = Instant::now();
-        let mut low_swr = 0;
+
+        let mut swr = 0;
+        let mut swr_count = 0;
 
         loop {
             sleep(Duration::from_millis(200));
-            let Ok(swr) = self.read_swr() else {
+            let Ok(current) = self.read_swr() else {
                 break;
             };
-            info!("SWR = {}", swr);
-            if swr < 50 {
-                low_swr += 1;
+            info!("SWR = {}", current);
+            if current < 50 {
+                swr_count += 1;
             }
-            if low_swr > 10 || start.elapsed() > Duration::from_secs(5) {
+            if swr_count > 10 || start.elapsed() > Duration::from_secs(5) {
+                swr = current;
                 break;
             }
         }
 
         self.assert_key(false);
-        sleep(Duration::from_millis(500));
 
+        sleep(Duration::from_millis(500));
         self.set_mode(saved_mode)?;
         self.set_power(saved_power)?;
 
-        Ok(())
+        Ok(swr)
     }
 }

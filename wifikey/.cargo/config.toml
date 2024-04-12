@@ -3,8 +3,15 @@ target = "xtensa-esp32-espidf"
 
 [target.xtensa-esp32-espidf]
 linker = "ldproxy"
-runner = "espflash flash --monitor"                                         # Select this runner for espflash v2.x.x
-rustflags = ["-C", "default-linker-libraries", "--cfg", "board=\"m5atom\""]
+runner = "espflash flash --monitor" # Select this runner for espflash v2.x.x
+rustflags = [
+    "-C",
+    "default-linker-libraries",
+    "--cfg",
+    "board=\"m5atom\"",
+    "--cfg",
+    "mio_unsupported_force_poll_poll",
+]
 #rustflags = [
 #    "-C",
 #    "default-linker-libraries",

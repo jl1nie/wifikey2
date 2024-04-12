@@ -1,5 +1,6 @@
 [wifikey]
 wifi_ssid = "SSID"
-wifi_passwd = "PASS"
-remote_server = "remoteFQDN:port"
-server_password = "password"
+wifi_passwd = "PASSWD"
+remote_server = "remoteIP:port"
+server_password = "PASSWD"
+sesami = 0

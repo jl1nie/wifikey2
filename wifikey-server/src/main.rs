@@ -1,4 +1,5 @@
 use anyhow::Result;
+use chrono::{DateTime, Local};
 use config::Config;
 use log::trace;
 use std::net::ToSocketAddrs;
@@ -45,7 +46,8 @@ fn main() -> Result<()> {
     loop {
         match listener.accept() {
             Ok((session, addr)) => {
-                println!("Accept new session from {}", addr);
+                let local_time: DateTime<Local> = Local::now();
+                println!("{}: Accept new session from {}", local_time, addr);
                 let Ok(_magic) = WkAuth::challenge(
                     session.clone(),
                     &config.get_string("server_password").unwrap(),

@@ -4,14 +4,16 @@ use bytes::buf;
 use esp_idf_hal::{delay::FreeRtos, gpio::*, peripherals::Peripherals};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::peripheral, wifi::*};
 use esp_idf_sys::xTaskGetTickCountFromISR;
-use smart_leds::SmartLedsWrite;
-use ws2812_esp32_rmt_driver::{driver::color::LedPixelColorGrbw32, LedPixelEsp32Rmt, RGB8};
+
+use smart_leds::{SmartLedsWrite, RGB8};
+use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use std::net::ToSocketAddrs;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use log::{error, info, trace};
+//use tokio_kcp::{KcpConfig, KcpListener, KcpNoDelayConfig, KcpStream};
 use wksocket::{sleep, tick_count, MessageSND, WkAuth, WkSender, WkSession, MAX_SLOTS};
 
 #[toml_cfg::toml_config]
@@ -51,7 +53,7 @@ fn main() -> Result<()> {
     let sysloop = EspSystemEventLoop::take()?;
 
     #[cfg(board = "m5atom")]
-    let mut led = LedPixelEsp32Rmt::<RGB8, LedPixelColorGrbw32>::new(0, 27).unwrap();
+    let mut led = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio27).unwrap();
     #[cfg(board = "m5atom")]
     let empty_color = std::iter::repeat(RGB8::default()).take(1);
     #[cfg(board = "m5atom")]
@@ -119,6 +121,13 @@ fn main() -> Result<()> {
         .unwrap();
 
     info!("Remote Server ={}", remote_addr);
+
+    // let mut kcp_config = KcpConfig::default();
+    // kcp_config.mtu = 256;
+    // kcp_config.nodelay = KcpNoDelayConfig::fastest();
+    // kcp_config.wnd_size = (2, 2);
+    // kcp_config.flush_write = true;
+    // kcp_config.flush_acks_input = true;
 
     loop {
         let session = WkSession::connect(remote_addr).unwrap();
