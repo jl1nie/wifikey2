@@ -94,30 +94,30 @@ impl WifiKeyServer {
             match listener.accept() {
                 Ok((session, addr)) => {
                     info!("Accept new session from {}", addr);
-                    rstat.session_active.store(true, Ordering::Relaxed);
+                    //rstat.session_active.store(true, Ordering::Relaxed);
                     let Ok(_magic) =
                         WkAuth::challenge(session.clone(), &config.server_password, config.sesami)
                     else {
                         info!("Auth. failure.");
-                        rstat.auth_failure.store(true, Ordering::Relaxed);
+                        //rstat.auth_failure.store(true, Ordering::Relaxed);
                         session.close();
-                        rstat.session_active.store(false, Ordering::Relaxed);
+                        //rstat.session_active.store(false, Ordering::Relaxed);
                         continue;
                     };
                     info!("Auth. Success.");
                     {
-                        let mut peer = rstat.peer_address.lock().unwrap();
-                        *peer = Some(addr);
-                        rstat.auth_failure.store(false, Ordering::Relaxed);
+                        //let mut peer = rstat.peer_address.lock().unwrap();
+                        //*peer = Some(addr);
+                        //rstat.auth_failure.store(false, Ordering::Relaxed);
                     }
                     let mesg = WkReceiver::new(session).unwrap();
                     let remote = RemoteKeyer::new(rstat.clone(), rig.clone());
                     remote.run(mesg);
-                    rstat.session_active.store(false, Ordering::Relaxed);
+                    info!("spawn remote keyer done.");
                     {
-                        let mut peer = rstat.peer_address.lock().unwrap();
-                        *peer = None;
-                        rstat.session_active.store(false, Ordering::Relaxed);
+                        //    let mut peer = rstat.peer_address.lock().unwrap();
+                        //   *peer = None;
+                        //   rstat.session_active.store(false, Ordering::Relaxed);
                     }
                 }
                 Err(e) => {

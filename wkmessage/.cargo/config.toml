@@ -1,0 +1,16 @@
+[build]
+target = "xtensa-esp32-espidf"
+
+[target.xtensa-esp32-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"                                         # Select this runner for espflash v2.x.x
+rustflags = ["-C", "default-linker-libraries", "--cfg", "board=\"m5atom\""]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32"
+# Note: this variable is not used by the pio builder (`cargo build --features pio`)
+ESP_IDF_VERSION = "v4.4.7"
+ESP_IDF_SDKCONFIG_DEFAULTS = "sdkconfig.defaults"

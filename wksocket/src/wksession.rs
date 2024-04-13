@@ -106,8 +106,15 @@ impl KcpSocket {
             bail!("connection closed.");
         }
         let n = self.kcp.send(buf).unwrap();
-        self.last_update = tick_count();
         self.kcp.flush();
+
+        let wts = self.kcp.wait_snd();
+        trace!("sent {} bytes", n);
+        trace!("{} packets are waiting to be sent", wts);
+        if wts > 100 {
+            bail!("link is dead???")
+        }
+        self.last_update = tick_count();
         Ok(n)
     }
 

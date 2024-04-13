@@ -3,11 +3,14 @@ use crate::wifikey::RemoteStatics;
 use anyhow::Result;
 use core::str;
 use log::{info, trace};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use std::thread::{self};
+use std::{
+    mem,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use wksocket::{sleep, tick_count, MessageRCV, WkReceiver};
 
 pub struct Keyer {
@@ -180,7 +183,10 @@ impl RemoteKeyer {
                 info!("session closed");
                 break;
             }
+            sleep(1);
+            info!("wait for rx_pert");
             if let Ok(msgs) = rx_port.recv() {
+                info!("recv ={}", msgs.len());
                 for m in msgs {
                     match m {
                         MessageRCV::Sync(rmt) => {
@@ -255,18 +261,18 @@ impl RemoteKeyer {
                                 sleep(1);
                             }
                         }
-                    }
+                    };
+                    sleep(1);
                 }
                 if asserted != 0 && tick_count() - asserted > RemoteKeyer::MAX_ASSERT_DURAION {
                     rigcon.assert_key(false);
                     asserted = 0;
                 }
             } else {
-                info!("session closed");
-                break 'restart;
+                info!("recv timeout");
+                //break 'restart;
             }
         });
-        handle.join();
     }
 
     pub fn stop(&self) {

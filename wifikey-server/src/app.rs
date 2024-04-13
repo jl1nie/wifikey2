@@ -1,8 +1,12 @@
 use crate::{RemoteStatics, WiFiKeyConfig, WifiKeyServer};
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 use config::Config;
+use std::thread::{self, sleep};
+use std::time::{Duration, Instant};
+
 use std::{
     fmt::format,
+    slice::SliceIndex,
     sync::{atomic::Ordering, Arc},
 };
 
@@ -90,7 +94,7 @@ impl eframe::App for WiFiKeyApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("WiFiKey2");
-
+            /*
             ui.horizontal(|ui| {
                 ui.label("Peer Address: ");
                 let peer = self.remote_statics.peer_address.lock().unwrap();
@@ -99,36 +103,46 @@ impl eframe::App for WiFiKeyApp {
                 } else {
                     "".to_owned()
                 });
-            });
-
+            });*/
+            /*
+                ui.horizontal(|ui| {
+                    ui.label("Active: ");
+                    let session = self.remote_statics.session_active.load(Ordering::Relaxed);
+                    ui.label(session.to_string());
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Auth Failure: ");
+                    let session = self.remote_statics.auth_failure.load(Ordering::Relaxed);
+                    ui.label(session.to_string());
+                });
+            */
             ui.horizontal(|ui| {
-                ui.label("Active: ");
-                let session = self.remote_statics.session_active.load(Ordering::Relaxed);
-                ui.label(session.to_string());
+                ui.label("sesami: ");
+                ui.label(self.sesami.to_string());
             });
-            ui.horizontal(|ui| {
-                ui.label("Auth Failure: ");
-                let session = self.remote_statics.auth_failure.load(Ordering::Relaxed);
-                ui.label(session.to_string());
-            });
-
+            self.sesami += 1;
             ui.separator();
-
-            ui.horizontal(|ui| {
-                ui.label("WPM: ");
-                let wpm = self.remote_statics.wpm.load(Ordering::Relaxed) as f32 / 10.0;
-                ui.label(wpm.to_string());
-            });
-            ui.horizontal(|ui| {
-                ui.label("ATU Active: ");
-                let atu = self.remote_statics.atu_active.load(Ordering::Relaxed);
-                ui.label(atu.to_string());
-            });
-
+            /*
+                        ui.horizontal(|ui| {
+                            ui.label("WPM: ");
+                            let wpm = self.remote_statics.wpm.load(Ordering::Relaxed) as f32 / 10.0;
+                            ui.label(wpm.to_string());
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("ATU Active: ");
+                            let atu = self.remote_statics.atu_active.load(Ordering::Relaxed);
+                            ui.label(atu.to_string());
+                        });
+            */
             ui.separator();
             if ui.button("Start ATU w/o CAT ctrl").clicked() {
-                self.server.start_ATU();
+                //self.server.start_ATU();
+                self.sesami = 0;
             }
+        });
+        egui::Window::new("Log").show(ctx, |ui| {
+            // draws the actual logger ui
+            egui_logger::logger_ui(ui);
         });
     }
 }

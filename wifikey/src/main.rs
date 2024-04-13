@@ -126,6 +126,7 @@ fn main() -> Result<()> {
         else {
             session.close();
             info!("Auth. failed.");
+            drop(session);
             sleep(5000);
             continue;
         };
