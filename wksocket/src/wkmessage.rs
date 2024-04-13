@@ -40,7 +40,7 @@ impl WkSender {
             if let Ok(cmd) = rx.try_recv() {
                 match cmd {
                     MessageSND::CloseSession => {
-                        session.close();
+                        session.close().unwrap();
                         closed.store(true, Ordering::Relaxed);
                         break;
                     }
@@ -51,7 +51,7 @@ impl WkSender {
                             trace!("START ATU {} bytes pkt sent", n);
                         } else {
                             trace!("session closed by peer");
-                            session.close();
+                            session.close().unwrap();
                             closed.store(true, Ordering::Relaxed);
                             break;
                         }
@@ -64,7 +64,7 @@ impl WkSender {
                             slots.clear();
                         } else {
                             trace!("session closed by peer");
-                            session.close();
+                            session.close().unwrap();
                             closed.store(true, Ordering::Relaxed);
                             break;
                         }
@@ -96,7 +96,7 @@ impl WkSender {
 
     pub fn send(&mut self, msg: MessageSND) -> Result<()> {
         if !self.session_closed.load(Ordering::Relaxed) {
-            self.tx.send(msg);
+            self.tx.send(msg).unwrap();
             Ok(())
         } else {
             Err(anyhow!("session closed by peer"))
@@ -140,7 +140,7 @@ impl WkReceiver {
 
                 if closed.load(Ordering::Relaxed) {
                     trace!("session closed.");
-                    session.close();
+                    session.close().unwrap();
                     break;
                 }
                 sleep(1);
