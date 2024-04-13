@@ -29,8 +29,3 @@ pub fn sleep(ms: u32) {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     thread::sleep(Duration::from_millis(ms as u64));
 }
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub struct RigControl {
-    //ports :
-}

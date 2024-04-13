@@ -142,8 +142,6 @@ impl Morse {
     pub fn run(&self, rx_port: WkReceiver) {
         let mut rmt_epoch = 0u32;
         let mut epoch = 0u32;
-        let mut elapse = 0u32;
-        let mut elapse_rmt = 0u32;
         let mut asserted = 0u32;
         let rigcon = self.rigcontrol.clone();
 
@@ -195,11 +193,11 @@ impl Morse {
                             }
 
                             // Calculate remote elapse time.
-                            elapse_rmt = tm - rmt_epoch;
+                            let elapse_rmt = tm - rmt_epoch;
                             loop {
                                 // calculate local eplapse time
                                 let now = tick_count();
-                                elapse = now - epoch;
+                                let elapse = now - epoch;
                                 if elapse >= elapse_rmt {
                                     if keydown {
                                         rigcon.assert_key(true);

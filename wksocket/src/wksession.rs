@@ -7,7 +7,7 @@ use md5::{Digest, Md5};
 use rand::random;
 use std::io::{self, Cursor, Write};
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -46,6 +46,7 @@ impl Write for UDPOutput {
     }
 }
 
+#[allow(dead_code)]
 pub enum KcpMode {
     Default,
     Normal,
@@ -107,7 +108,7 @@ impl KcpSocket {
         }
         let n = self.kcp.send(buf).unwrap();
         self.last_update = tick_count();
-        self.kcp.flush();
+        self.kcp.flush()?;
         Ok(n)
     }
 
@@ -127,14 +128,14 @@ impl KcpSocket {
 
     #[allow(dead_code)]
     pub fn flush(&mut self) -> Result<()> {
-        self.kcp.flush();
+        self.kcp.flush()?;
         self.last_update = tick_count();
         Ok(())
     }
 
     pub fn update(&mut self) -> Result<u32> {
         let current = tick_count();
-        self.kcp.update(current);
+        self.kcp.update(current)?;
         Ok(self.kcp.check(current))
     }
 
@@ -204,7 +205,7 @@ impl WkSession {
         let client_socket = session.socket.clone();
         let client_session = session.clone();
 
-        let handle = thread::spawn(move || {
+        let _handle = thread::spawn(move || {
             let buf = &mut [0u8; PKT_SIZE];
             loop {
                 if client_session.closed() {
@@ -232,7 +233,7 @@ impl WkSession {
                     if s.closed() {
                         break;
                     } else {
-                        s.input(pkt);
+                        s.input(pkt).unwrap();
                     }
                 }
             }
@@ -325,7 +326,7 @@ impl WkListener {
                             if !session.closed() {
                                 if peer == current_peer {
                                     trace!("input current session {} bytes", n);
-                                    session.input(pkt);
+                                    session.input(pkt).unwrap();
                                     continue;
                                 } else {
                                     trace!("discard packet");
@@ -337,10 +338,10 @@ impl WkListener {
                         trace!("accept new session from peer = {} input {} bytes", peer, n);
                         let session =
                             WkSession::new(udp.clone(), peer, Duration::from_secs(SESSION_TIMEOUT));
-                        session.input(pkt);
+                        session.input(pkt).unwrap();
 
                         let client_session = session.clone();
-                        tx.send((client_session, peer));
+                        tx.send((client_session, peer)).unwrap();
 
                         sessions = Some((session, peer));
                     }
@@ -417,7 +418,7 @@ impl WkAuth {
 
         let chl = random();
         sendbuf.put_u32(chl);
-        session.send(&sendbuf);
+        session.send(&sendbuf).unwrap();
 
         if session.recv_timeout(&mut buf, 1000).is_err() {
             info!("challenge response timeout");
@@ -431,7 +432,7 @@ impl WkAuth {
         let res = if ok { random::<u32>() + 1u32 } else { 0u32 };
         sendbuf.clear();
         sendbuf.put_u32(res);
-        session.send(&sendbuf);
+        session.send(&sendbuf).unwrap();
 
         if ok {
             info!("challenge successe {}", res);
