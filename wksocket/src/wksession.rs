@@ -13,7 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 pub const MTU_SIZE: usize = 512;
-pub const SESSION_TIMEOUT: u64 = 30;
+pub const SESSION_TIMEOUT: u64 = 15;
 pub const PKT_SIZE: usize = 128;
 
 struct UDPOutput {
@@ -286,7 +286,15 @@ impl WkSession {
 }
 
 pub struct WkListener {
+    stop: Arc<AtomicBool>,
     rx: mpsc::Receiver<(Arc<WkSession>, SocketAddr)>,
+}
+
+impl Drop for WkListener {
+    fn drop(&mut self) {
+        info!("Litener dropped. stop thread.");
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 impl WkListener {
@@ -294,61 +302,71 @@ impl WkListener {
         let udp = UdpSocket::bind(addr)?;
         let udp = Arc::new(udp);
         let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        {
+            let stop = stop.clone();
+            thread::spawn(move || {
+                let mut buf = [0u8; 256];
+                let mut sessions: Option<(Arc<WkSession>, SocketAddr)> = None;
+                loop {
+                    sleep(10);
+                    if stop.load(Ordering::Relaxed) {
+                        info!("stop listner thread");
+                        break;
+                    }
+                    match udp.recv_from(&mut buf) {
+                        Err(_) => continue,
+                        Ok((n, peer)) => {
+                            let pkt = &mut buf[..n];
 
-        thread::spawn(move || {
-            let mut buf = [0u8; 256];
-            let mut sessions: Option<(Arc<WkSession>, SocketAddr)> = None;
-            loop {
-                sleep(10);
-                match udp.recv_from(&mut buf) {
-                    Err(_) => continue,
-                    Ok((n, peer)) => {
-                        let pkt = &mut buf[..n];
+                            trace!("received {}bytes from {}", n, peer);
 
-                        trace!("received {}bytes from {}", n, peer);
-
-                        if pkt.len() < kcp::KCP_OVERHEAD {
-                            info!(
-                                "listen: packet too short {} bytes received from {}",
-                                n, peer
-                            );
-                            continue;
-                        }
-
-                        let mut conv = kcp::get_conv(pkt);
-                        if conv == 0 {
-                            conv = rand::random();
-                            trace!("set new conv ={}", conv);
-                            kcp::set_conv(pkt, conv);
-                        }
-
-                        if let Some((ref session, current_peer)) = sessions {
-                            if !session.closed() {
-                                if peer == current_peer {
-                                    trace!("input current session {} bytes", n);
-                                    session.input(pkt).unwrap();
-                                    continue;
-                                } else {
-                                    trace!("discard packet");
-                                    continue;
-                                }
+                            if pkt.len() < kcp::KCP_OVERHEAD {
+                                info!(
+                                    "listen: packet too short {} bytes received from {}",
+                                    n, peer
+                                );
+                                continue;
                             }
-                            trace!("session cloed.");
+
+                            let mut conv = kcp::get_conv(pkt);
+                            if conv == 0 {
+                                conv = rand::random();
+                                trace!("set new conv ={}", conv);
+                                kcp::set_conv(pkt, conv);
+                            }
+
+                            if let Some((ref session, current_peer)) = sessions {
+                                if !session.closed() {
+                                    if peer == current_peer {
+                                        trace!("input current session {} bytes", n);
+                                        session.input(pkt).unwrap();
+                                        continue;
+                                    } else {
+                                        trace!("discard packet");
+                                        continue;
+                                    }
+                                }
+                                trace!("session closed.");
+                            }
+                            trace!("accept new session from peer = {} input {} bytes", peer, n);
+                            let session = WkSession::new(
+                                udp.clone(),
+                                peer,
+                                Duration::from_secs(SESSION_TIMEOUT),
+                            );
+                            session.input(pkt).unwrap();
+
+                            let client_session = session.clone();
+                            tx.send((client_session, peer)).unwrap();
+
+                            sessions = Some((session, peer));
                         }
-                        trace!("accept new session from peer = {} input {} bytes", peer, n);
-                        let session =
-                            WkSession::new(udp.clone(), peer, Duration::from_secs(SESSION_TIMEOUT));
-                        session.input(pkt).unwrap();
-
-                        let client_session = session.clone();
-                        tx.send((client_session, peer)).unwrap();
-
-                        sessions = Some((session, peer));
                     }
                 }
-            }
-        });
-        Ok(WkListener { rx })
+            });
+        }
+        Ok(WkListener { stop, rx })
     }
 
     pub fn accept(&mut self) -> Result<(Arc<WkSession>, SocketAddr)> {
@@ -362,84 +380,80 @@ impl WkListener {
     }
 }
 
-pub struct WkAuth {}
+fn hashstr(buf: &mut [u8], passwd: &str) {
+    let mut hasher = Md5::new();
+    hasher.update(passwd);
+    let result = hasher.finalize();
+    let buf = &mut buf[..16];
+    buf.copy_from_slice(&result);
+}
 
-impl WkAuth {
-    fn hashstr(buf: &mut [u8], passwd: &str) {
-        let mut hasher = Md5::new();
-        hasher.update(passwd);
-        let result = hasher.finalize();
-        let buf = &mut buf[..16];
-        buf.copy_from_slice(&result);
+pub fn response(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u32> {
+    let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
+    let mut buf = [0u8; PKT_SIZE];
+
+    sendbuf.put_u64(sesami);
+    session.send(&sendbuf)?;
+
+    if session.recv_timeout(&mut buf, 1000).is_err() {
+        bail!("auth response time out");
     }
 
-    pub fn response(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u32> {
-        let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
-        let mut buf = [0u8; PKT_SIZE];
+    let mut rcvbuf = Cursor::new(buf);
+    let salt = rcvbuf.get_u32();
+    hashstr(&mut buf, &format!("{}{}", passwd, salt));
+    session.send(&buf)?;
 
-        sendbuf.put_u64(sesami);
-        session.send(&sendbuf)?;
+    if session.recv_timeout(&mut buf, 1000).is_err() {
+        bail!("auth response time out");
+    }
+    let mut rcvbuf = Cursor::new(buf);
+    let res = rcvbuf.get_u32();
+    if res == 0 {
+        Err(anyhow!("auth failed"))
+    } else {
+        Ok(res)
+    }
+}
 
-        if session.recv_timeout(&mut buf, 1000).is_err() {
-            bail!("auth response time out");
-        }
+pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u32> {
+    let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
+    let mut buf = [0u8; PKT_SIZE];
 
-        let mut rcvbuf = Cursor::new(buf);
-        let salt = rcvbuf.get_u32();
-        WkAuth::hashstr(&mut buf, &format!("{}{}", passwd, salt));
-        session.send(&buf)?;
-
-        if session.recv_timeout(&mut buf, 1000).is_err() {
-            bail!("auth response time out");
-        }
-        let mut rcvbuf = Cursor::new(buf);
-        let res = rcvbuf.get_u32();
-        if res == 0 {
-            Err(anyhow!("auth failed"))
-        } else {
-            Ok(res)
-        }
+    if session.recv_timeout(&mut buf, 6000).is_err() {
+        trace!("auth challenge timeout");
+        bail!("auth challenge timeout");
     }
 
-    pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u32> {
-        let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
-        let mut buf = [0u8; PKT_SIZE];
+    let mut rcvbuf = Cursor::new(buf);
+    if sesami != rcvbuf.get_u64() {
+        trace!("can not open sesami");
+        bail!("auth challenge timeout");
+    }
 
-        if session.recv_timeout(&mut buf, 6000).is_err() {
-            trace!("auth challenge timeout");
-            bail!("auth challenge timeout");
-        }
+    let chl = random();
+    sendbuf.put_u32(chl);
+    session.send(&sendbuf).unwrap();
 
-        let mut rcvbuf = Cursor::new(buf);
-        if sesami != rcvbuf.get_u64() {
-            trace!("can not open sesami");
-            bail!("auth challenge timeout");
-        }
+    if session.recv_timeout(&mut buf, 1000).is_err() {
+        info!("challenge response timeout");
+        bail!("auth challenge time out");
+    };
 
-        let chl = random();
-        sendbuf.put_u32(chl);
-        session.send(&sendbuf).unwrap();
+    let response = &buf[..16];
+    let mut challenge = [0u8; 16];
+    hashstr(&mut challenge, &format!("{}{}", passwd, chl));
+    let ok = response.iter().eq(challenge.iter());
+    let res = if ok { random::<u32>() + 1u32 } else { 0u32 };
+    sendbuf.clear();
+    sendbuf.put_u32(res);
+    session.send(&sendbuf).unwrap();
 
-        if session.recv_timeout(&mut buf, 1000).is_err() {
-            info!("challenge response timeout");
-            bail!("auth challenge time out");
-        };
-
-        let response = &buf[..16];
-        let mut challenge = [0u8; 16];
-        WkAuth::hashstr(&mut challenge, &format!("{}{}", passwd, chl));
-        let ok = response.iter().eq(challenge.iter());
-        let res = if ok { random::<u32>() + 1u32 } else { 0u32 };
-        sendbuf.clear();
-        sendbuf.put_u32(res);
-        session.send(&sendbuf).unwrap();
-
-        if ok {
-            info!("challenge successe {}", res);
-            Ok(res)
-        } else {
-            info!("challenge fail {:?} {:?}", response, challenge);
-            bail!("auth challenge failed")
-        }
+    if ok {
+        info!("challenge successe {}", res);
+        Ok(res)
+    } else {
+        info!("challenge fail {:?} {:?}", response, challenge);
+        bail!("auth challenge failed")
     }
 }

@@ -4,7 +4,7 @@ use config::Config;
 use log::trace;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
-use wksocket::{WkAuth, WkListener, WkReceiver};
+use wksocket::{challenge, WkListener, WkReceiver};
 mod keyer;
 use keyer::Morse;
 
@@ -48,7 +48,7 @@ fn main() -> Result<()> {
             Ok((session, addr)) => {
                 let local_time: DateTime<Local> = Local::now();
                 println!("{}: Accept new session from {}", local_time, addr);
-                let Ok(_magic) = WkAuth::challenge(
+                let Ok(_magic) = challenge(
                     session.clone(),
                     &config.get_string("server_password").unwrap(),
                     config.get_string("sesami").unwrap().parse().unwrap(),
@@ -61,10 +61,11 @@ fn main() -> Result<()> {
                 let mesg = WkReceiver::new(session)?;
                 let morse = Morse::new(rigcontrol.clone()).unwrap();
                 morse.run(mesg);
-                println!("Sesstion closed.");
+                println!("Session closed.");
             }
             Err(e) => {
-                trace!("err = {}", e)
+                trace!("err = {}", e);
+                listener = WkListener::bind(addr).unwrap();
             }
         }
     }
