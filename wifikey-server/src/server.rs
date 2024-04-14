@@ -3,6 +3,7 @@ use crate::rigcontrol::RigControl;
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use log::{info, trace};
+use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 use std::sync::atomic::Ordering;
 use std::sync::{
@@ -118,6 +119,35 @@ impl RemoteStats {
     pub fn set_stats(&self, wpm: usize, pkt: usize) {
         self.wpm.store(wpm, Ordering::Relaxed);
         self.pkt.store(pkt, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub fn get_misc_stats(&self) -> (bool, bool, usize, usize) {
+        (
+            self.auth_ok.load(Ordering::Relaxed),
+            self.atu_start.load(Ordering::Relaxed),
+            self.wpm.load(Ordering::Relaxed),
+            self.pkt.load(Ordering::Relaxed),
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn get_session_stats(&self) -> HashMap<String, String> {
+        let mut stats = HashMap::new();
+        let peer = self.peer_address.lock().unwrap();
+        if peer.is_some() {
+            stats.insert("peer_address".to_string(), peer.clone().unwrap())
+        } else {
+            stats.insert("peer_address".to_string(), "".to_string())
+        };
+
+        let session = self.session_start.lock().unwrap();
+        if session.is_some() {
+            stats.insert("session_start".to_string(), session.clone().unwrap())
+        } else {
+            stats.insert("session_start".to_string(), "".to_string())
+        };
+        stats
     }
 }
 #[allow(dead_code)]
