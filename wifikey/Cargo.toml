@@ -18,10 +18,6 @@ embassy = [
   "esp-idf-svc/critical-section",
   "esp-idf-svc/embassy-time-driver",
 ]
-[patch.crates-io]
-tokio = { git = "https://github.com/tokio-rs/tokio", branch = "master" }
-mio = { git = "https://github.com/tokio-rs/mio", branch = "master" }
-socket2 = { git = "https://github.com/rust-lang/socket2", branch = "master" }
 
 [dependencies]
 anyhow = "1"
@@ -35,9 +31,6 @@ ws2812-esp32-rmt-driver = { git = "https://github.com/w-ockham/ws2812-esp32-rmt-
   "smart-leds-trait",
 ] }
 toml-cfg = "0.2"
-tokio = { version = "*", features = ["rt", "net", "io-util"] }
-mio = { version = "0.8.8", features = ["log"] }
-tokio_kcp = "0.9"
 wksocket = { path = "../wksocket" }
 [build-dependencies]
 embuild = "0.31.3"

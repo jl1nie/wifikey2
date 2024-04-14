@@ -430,14 +430,14 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u
     let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
     let mut buf = [0u8; PKT_SIZE];
 
-    if session.recv_timeout(&mut buf, 6000).is_err() {
-        trace!("auth challenge timeout");
+    if session.recv_timeout(&mut buf, 1000).is_err() {
+        info!("auth challenge timeout");
         bail!("auth challenge timeout");
     }
 
     let mut rcvbuf = Cursor::new(buf);
     if sesami != rcvbuf.get_u64() {
-        trace!("can not open sesami");
+        info!("cannot open sesami");
         bail!("auth challenge timeout");
     }
 
