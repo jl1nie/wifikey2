@@ -1,14 +1,7 @@
-use crate::{RemoteStatics, WiFiKeyConfig, WifiKeyServer};
+use crate::{RemoteStats, WiFiKeyConfig, WifiKeyServer};
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 use config::Config;
-use std::thread::{self, sleep};
-use std::time::{Duration, Instant};
-
-use std::{
-    fmt::format,
-    slice::SliceIndex,
-    sync::{atomic::Ordering, Arc},
-};
+use std::{sync::Arc, time::Duration};
 
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
@@ -21,7 +14,7 @@ pub struct WiFiKeyApp {
     sesami: u64,
 
     #[serde(skip)]
-    remote_statics: Arc<RemoteStatics>,
+    remote_stats: Arc<RemoteStats>,
     #[serde(skip)]
     server: Arc<WifiKeyServer>,
 }
@@ -40,7 +33,7 @@ impl Default for WiFiKeyApp {
         let server_password = config.get_string("server_password").unwrap();
         let sesami: u64 = config.get_string("sesami").unwrap().parse().unwrap();
 
-        let config = Arc::new(WiFiKeyConfig::new(
+        let wk_config = Arc::new(WiFiKeyConfig::new(
             server_password.clone(),
             sesami,
             accept_port.clone(),
@@ -49,9 +42,9 @@ impl Default for WiFiKeyApp {
             use_rts_for_keying,
         ));
 
-        let remote_statics = Arc::new(RemoteStatics::default());
+        let remote_stats = Arc::new(RemoteStats::default());
 
-        let server = Arc::new(WifiKeyServer::new(config, remote_statics.clone()).unwrap());
+        let server = Arc::new(WifiKeyServer::new(wk_config, remote_stats.clone()).unwrap());
 
         Self {
             accept_port,
@@ -60,7 +53,7 @@ impl Default for WiFiKeyApp {
             use_rts_for_keying,
             server_password,
             sesami,
-            remote_statics,
+            remote_stats,
             server,
         }
     }
@@ -80,6 +73,8 @@ impl eframe::App for WiFiKeyApp {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.request_repaint_after(Duration::from_millis(500));
+
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
@@ -87,61 +82,50 @@ impl eframe::App for WiFiKeyApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
-                ui.add_space(16.0);
-                egui::widgets::global_dark_light_mode_buttons(ui);
             });
         });
-
+        let session_stats = self.remote_stats.get_session_stats();
+        let (auth, atu, wpm, pkt) = self.remote_stats.get_misc_stats();
+        let wpm = wpm as f32 / 10.0f32;
+        let visual = egui::style::Visuals::default();
+        let hcolor = if auth {
+            visual.error_fg_color
+        } else {
+            visual.strong_text_color()
+        };
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("WiFiKey2");
-            /*
-            ui.horizontal(|ui| {
-                ui.label("Peer Address: ");
-                let peer = self.remote_statics.peer_address.lock().unwrap();
-                ui.label(if peer.is_some() {
-                    peer.unwrap().to_string()
-                } else {
-                    "".to_owned()
-                });
-            });*/
-            /*
-                ui.horizontal(|ui| {
-                    ui.label("Active: ");
-                    let session = self.remote_statics.session_active.load(Ordering::Relaxed);
-                    ui.label(session.to_string());
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Auth Failure: ");
-                    let session = self.remote_statics.auth_failure.load(Ordering::Relaxed);
-                    ui.label(session.to_string());
-                });
-            */
-            ui.horizontal(|ui| {
-                ui.label("sesami: ");
-                ui.label(self.sesami.to_string());
-            });
-            self.sesami += 1;
+            ui.label(egui::RichText::new("WiFiKey2").heading().color(hcolor));
             ui.separator();
-            /*
-                        ui.horizontal(|ui| {
-                            ui.label("WPM: ");
-                            let wpm = self.remote_statics.wpm.load(Ordering::Relaxed) as f32 / 10.0;
-                            ui.label(wpm.to_string());
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("ATU Active: ");
-                            let atu = self.remote_statics.atu_active.load(Ordering::Relaxed);
-                            ui.label(atu.to_string());
-                        });
-            */
+
+            ui.horizontal(|ui| {
+                ui.label("Session start at: ");
+                if let Some(str) = session_stats.get("session_start") {
+                    ui.label(str);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("From: ");
+                if let Some(str) = session_stats.get("peer_address") {
+                    ui.label(str);
+                }
+            });
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.label("WPM: ");
+                ui.label(wpm.to_string());
+            });
+            ui.horizontal(|ui| {
+                ui.label("PKT: ");
+                ui.label(pkt.to_string());
+            });
+
             ui.separator();
             if ui.button("Start ATU w/o CAT ctrl").clicked() {
-                //self.server.start_ATU();
-                self.sesami = 0;
+                self.server.start_atu();
             }
         });
         egui::Window::new("Log").show(ctx, |ui| {
-            // draws the actual logger ui
             egui_logger::logger_ui(ui);
         });
     }

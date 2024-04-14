@@ -1,18 +1,16 @@
 use crate::rigcontrol::RigControl;
-use crate::wifikey::RemoteStatics;
+use crate::server::RemoteStats;
 use anyhow::Result;
-use core::str;
 use log::{info, trace};
-use std::thread::{self};
-use std::{
-    mem,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-};
+use std::sync::atomic::Ordering;
+use std::sync::{atomic::AtomicBool, Arc};
+use std::thread;
 use wksocket::{sleep, tick_count, MessageRCV, WkReceiver};
 
+pub const MAX_ASSERT_DURAION: u32 = 5000;
+pub const MSPERWPM: u32 = 1200; /* PARIS = 50 tick */
+
+#[allow(dead_code)]
 pub struct Keyer {
     rigcontrol: Arc<RigControl>,
     ratio: u32,
@@ -23,15 +21,14 @@ pub struct Keyer {
 }
 
 impl Keyer {
-    pub const MSPERWPM: u32 = 1200; /* PARIS = 50 tick */
-
+    #[allow(dead_code)]
     pub fn new(rigcontrol: Arc<RigControl>) -> Result<Self> {
         Ok(Self {
             rigcontrol,
             ratio: 3,
             word_space: 7,
             letter_space: 3,
-            tick: Self::MSPERWPM / 20,
+            tick: MSPERWPM / 20,
             morse_table: vec![
                 ('0', 5, 0x1f), // '0' : -----
                 ('1', 5, 0x1e), // '1' : .----
@@ -83,7 +80,7 @@ impl Keyer {
 
     #[allow(dead_code)]
     pub fn set_wpm(&mut self, wpm: u32) {
-        self.tick = Self::MSPERWPM / wpm
+        self.tick = MSPERWPM / wpm
     }
 
     #[allow(dead_code)]
@@ -147,68 +144,75 @@ impl Keyer {
 }
 
 pub struct RemoteKeyer {
-    remote_statics: Arc<RemoteStatics>,
+    remote_stats: Arc<RemoteStats>,
     rigcontrol: Arc<RigControl>,
-    done: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for RemoteKeyer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        info!("remote keyer dropped stop thread");
+    }
 }
 
 impl RemoteKeyer {
-    const MAX_ASSERT_DURAION: u32 = 5000;
+    pub fn new(remote_stats: Arc<RemoteStats>, rigcontrol: Arc<RigControl>) -> Self {
+        Self {
+            remote_stats,
+            rigcontrol,
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
 
     #[allow(dead_code)]
-
-    pub fn new(remote_statics: Arc<RemoteStatics>, rigcontrol: Arc<RigControl>) -> Self {
-        Self {
-            remote_statics,
-            rigcontrol,
-            done: Arc::new(AtomicBool::new(false)),
-        }
+    pub fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
     }
 
     pub fn run(&self, rx_port: WkReceiver) {
         let mut rmt_epoch = 0u32;
         let mut epoch = 0u32;
-        let mut elapse = 0u32;
-        let mut elapse_rmt = 0u32;
         let mut asserted = 0u32;
-        let mut duration = 0u32;
-        let mut duraion_max = 0u32;
+        let mut pkt = 0usize;
+        let mut duration_max = 1usize;
 
         let rigcon = self.rigcontrol.clone();
-        let loop_done = self.done.clone();
-        let rstat = self.remote_statics.clone();
-
+        let stopfl = self.stop.clone();
+        let stat = self.remote_stats.clone();
         let handle = thread::spawn(move || 'restart: loop {
-            if loop_done.load(Ordering::Relaxed) || rx_port.closed() {
+            if rx_port.closed() || stopfl.load(Ordering::Relaxed) {
                 info!("session closed");
+                stopfl.store(true, Ordering::Relaxed);
+                stat.set_session_active(false);
                 break;
             }
-            sleep(1);
-            info!("wait for rx_pert");
-            if let Ok(msgs) = rx_port.recv() {
-                info!("recv ={}", msgs.len());
+            if let Ok(msgs) = rx_port.try_recv() {
                 for m in msgs {
+                    pkt = pkt.wrapping_add(1);
                     match m {
                         MessageRCV::Sync(rmt) => {
                             // Sync remote/local time every 3 sec
                             if rmt - rmt_epoch > 3000 {
                                 rmt_epoch = rmt;
                                 epoch = tick_count();
-                                rstat
-                                    .wpm
-                                    .store(1000 / duraion_max as usize * 36, Ordering::Relaxed);
-                                duraion_max = 0;
                                 info!("Sync rmt={} local={}", rmt_epoch, epoch);
+                                if duration_max == 0 {
+                                    stat.set_stats(0, pkt);
+                                } else {
+                                    stat.set_stats(1000 / duration_max * 36, pkt);
+                                };
+                                duration_max = 0;
+                                stat.set_session_active(true);
                             }
                         }
                         MessageRCV::StartATU => {
                             info!("---- START ATU ----");
-                            rstat.atu_active.store(true, Ordering::Relaxed);
-                            match rigcon.start_atu_with_rigcontrol() {
-                                Ok(swr) => println!("Done SWR={}", swr),
-                                Err(e) => println!("ATU error = {} ", e),
+                            stat.set_atu_start(true);
+                            if let Err(e) = rigcon.start_atu_with_rigcontrol() {
+                                info!("Start ATU error = {} ", e);
                             };
-                            rstat.atu_active.store(false, Ordering::Relaxed);
+                            stat.set_atu_start(false);
                             break;
                         }
                         m => {
@@ -229,7 +233,6 @@ impl RemoteKeyer {
                                 }
                                 _ => {}
                             }
-
                             // Got Key mesg before sync
                             if rmt_epoch == 0 {
                                 rmt_epoch = tm;
@@ -237,11 +240,11 @@ impl RemoteKeyer {
                             }
 
                             // Calculate remote elapse time.
-                            elapse_rmt = tm - rmt_epoch;
+                            let elapse_rmt = tm - rmt_epoch;
                             loop {
                                 // calculate local eplapse time
                                 let now = tick_count();
-                                elapse = now - epoch;
+                                let elapse = now - epoch;
                                 if elapse >= elapse_rmt {
                                     if keydown {
                                         rigcon.assert_key(true);
@@ -249,33 +252,28 @@ impl RemoteKeyer {
                                         trace!("down");
                                     } else {
                                         rigcon.assert_key(false);
-                                        duration = now - asserted;
+                                        let duration = now - asserted;
+                                        if duration > duration_max as u32 {
+                                            duration_max = duration as usize;
+                                        }
                                         asserted = 0;
                                         trace!("up");
-                                        if duration > duraion_max {
-                                            duraion_max = duration;
-                                        }
                                     }
                                     break;
                                 }
                                 sleep(1);
                             }
                         }
-                    };
-                    sleep(1);
+                    }
                 }
-                if asserted != 0 && tick_count() - asserted > RemoteKeyer::MAX_ASSERT_DURAION {
+            } else {
+                if asserted != 0 && tick_count() - asserted > MAX_ASSERT_DURAION {
                     rigcon.assert_key(false);
                     asserted = 0;
                 }
-            } else {
-                info!("recv timeout");
-                //break 'restart;
+                sleep(1);
             }
         });
-    }
-
-    pub fn stop(&self) {
-        self.done.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
     }
 }

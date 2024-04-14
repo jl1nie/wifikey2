@@ -1,9 +1,14 @@
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use std::thread;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use std::time::Duration;
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+use time::OffsetDateTime;
+
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use esp_idf_hal::delay::FreeRtos;
 #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 use esp_idf_sys::xTaskGetTickCount;
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-use time::OffsetDateTime;
 
 #[inline]
 pub fn tick_count() -> u32 {
@@ -17,14 +22,10 @@ pub fn tick_count() -> u32 {
     }
 }
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[inline]
-pub async fn sleep(ms: u32) {
-    tokio::time::sleep(tokio::time::Duration::from_millis(ms as u64)).await;
-}
-
-#[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
 #[inline]
 pub fn sleep(ms: u32) {
+    #[cfg(any(target_arch = "xtensa", target_arch = "riscv32"))]
     FreeRtos::delay_ms(ms);
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    thread::sleep(Duration::from_millis(ms as u64));
 }

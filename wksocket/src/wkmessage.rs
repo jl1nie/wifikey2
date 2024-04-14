@@ -1,15 +1,13 @@
 use crate::wksession::{WkSession, PKT_SIZE};
-use anyhow::{anyhow, Result};
+use crate::wkutil::sleep;
+use anyhow::{bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
-use log::{info, trace};
+use log::trace;
 use std::io::Cursor;
-use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
-use tokio::sync::mpsc::{self, Receiver, Sender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
 
 pub const MAX_SLOTS: usize = 128;
 
@@ -25,6 +23,7 @@ pub enum MessageSND {
     CloseSession,
     StartATU,
 }
+
 pub struct WkSender {
     session_closed: Arc<AtomicBool>,
     tx: Sender<MessageSND>,
@@ -32,55 +31,52 @@ pub struct WkSender {
 
 impl WkSender {
     pub fn new(session: Arc<WkSession>) -> Result<Self> {
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, rx) = mpsc::channel();
         let mut buf = BytesMut::with_capacity(PKT_SIZE);
         let mut slots = Vec::<u8>::new();
         let session_closed = Arc::new(AtomicBool::new(false));
         let closed = session_closed.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Some(cmd) = rx.recv().await {
-                    match cmd {
-                        MessageSND::CloseSession => {
-                            session.close().await.unwrap();
+        thread::spawn(move || loop {
+            if let Ok(cmd) = rx.try_recv() {
+                match cmd {
+                    MessageSND::CloseSession => {
+                        session.close().unwrap();
+                        closed.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                    MessageSND::StartATU => {
+                        slots.clear();
+                        WkSender::encode(&mut buf, PacketKind::StartATU, 0, &slots);
+                        if let Ok(n) = session.send(&buf) {
+                            trace!("START ATU {} bytes pkt sent", n);
+                        } else {
+                            trace!("session closed by peer");
+                            session.close().unwrap();
                             closed.store(true, Ordering::Relaxed);
                             break;
                         }
-                        MessageSND::StartATU => {
-                            slots.clear();
-                            WkSender::encode(&mut buf, PacketKind::StartATU, 0, &slots);
-                            if let Ok(n) = session.send(&buf).await {
-                                trace!("START ATU {} bytes pkt sent", n);
-                            } else {
-                                trace!("session closed by peer");
-                                session.close().await.unwrap();
-                                closed.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                        }
-                        MessageSND::SendPacket(tm) => {
-                            WkSender::encode(&mut buf, PacketKind::KeyerMessage, tm, &slots);
-                            if let Ok(n) = session.send(&buf).await {
-                                trace!("{} bytes pkt sent at {} edges={}", n, tm, slots.len());
-                                buf.clear();
-                                slots.clear();
-                            } else {
-                                trace!("session closed by peer");
-                                session.close().await.unwrap();
-                                closed.store(true, Ordering::Relaxed);
-                                break;
-                            }
-                        }
-                        MessageSND::PosEdge(s) => slots.push(0x80u8 | s),
-                        MessageSND::NegEdge(s) => slots.push(s),
                     }
-                } else {
-                    break;
-                }
-                if closed.load(Ordering::Relaxed) {
-                    break;
+                    MessageSND::SendPacket(tm) => {
+                        WkSender::encode(&mut buf, PacketKind::KeyerMessage, tm, &slots);
+                        if let Ok(n) = session.send(&buf) {
+                            trace!("{} bytes pkt sent at {} edges={}", n, tm, slots.len());
+                            buf.clear();
+                            slots.clear();
+                        } else {
+                            trace!("session closed by peer");
+                            session.close().unwrap();
+                            closed.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                    MessageSND::PosEdge(s) => slots.push(0x80u8 | s),
+                    MessageSND::NegEdge(s) => slots.push(s),
                 }
             }
+            if closed.load(Ordering::Relaxed) {
+                break;
+            }
+            sleep(1);
         });
         Ok(WkSender { session_closed, tx })
     }
@@ -98,12 +94,12 @@ impl WkSender {
         }
     }
 
-    pub async fn send(&mut self, msg: MessageSND) -> Result<()> {
+    pub fn send(&mut self, msg: MessageSND) -> Result<()> {
         if !self.session_closed.load(Ordering::Relaxed) {
-            self.tx.send(msg).await?;
+            self.tx.send(msg).unwrap();
             Ok(())
         } else {
-            Err(anyhow!("session closed by peer"))
+            bail!("session closed by peer")
         }
     }
 }
@@ -124,30 +120,30 @@ pub struct WkReceiver {
 
 impl WkReceiver {
     pub fn new(session: Arc<WkSession>) -> Result<Self> {
-        let (tx, rx) = mpsc::channel::<Vec<MessageRCV>>(1);
+        let (tx, rx) = mpsc::channel::<Vec<MessageRCV>>();
 
         let session_closed = Arc::new(AtomicBool::new(false));
         let closed = session_closed.clone();
-        tokio::spawn(async move {
+        thread::spawn(move || {
             let mut buf = [0u8; PKT_SIZE];
             loop {
-                if let Ok(n) = session.recv(&mut buf).await {
                 if let Ok(n) = session.recv(&mut buf) {
-                    info!("read from session {}", n);
                     if n > 0 {
                         let slots = WkReceiver::decode(&buf);
-                        tx.send(slots).await.unwrap();
+                        tx.send(slots).unwrap();
                     }
                 } else {
                     let slots = vec![MessageRCV::SessionClosed];
-                    tx.send(slots).await.unwrap();
+                    tx.send(slots).unwrap();
                     closed.store(true, Ordering::Relaxed);
                 }
+
                 if closed.load(Ordering::Relaxed) {
                     trace!("session closed.");
-                    session.close().await.unwrap();
+                    session.close().unwrap();
                     break;
                 }
+                sleep(1);
             }
         });
         Ok(WkReceiver { session_closed, rx })
@@ -157,19 +153,25 @@ impl WkReceiver {
         self.session_closed.store(true, Ordering::Relaxed);
     }
 
-    pub async fn recv(&mut self) -> Result<Vec<MessageRCV>> {
-        if !self.session_closed.load(Ordering::Relaxed) {
-            if let Some(s) = self.rx.recv().await {
-                return Ok(s);
-            }
     pub fn recv(&self) -> Result<Vec<MessageRCV>> {
-        info!("session recv called");
-        //if !self.session_closed.load(Ordering::Relaxed) {
-        if let Ok(s) = self.rx.recv_timeout(Duration::from_millis(5)) {
-            return Ok(s);
+        if !self.session_closed.load(Ordering::Relaxed) {
+            match self.rx.recv() {
+                Ok(s) => Ok(s),
+                Err(e) => Err(e.into()),
+            }
+        } else {
+            bail!("session closed")
         }
-        //}
-        Err(anyhow!("session closed"))
+    }
+    pub fn try_recv(&self) -> Result<Vec<MessageRCV>> {
+        if !self.session_closed.load(Ordering::Relaxed) {
+            match self.rx.try_recv() {
+                Ok(s) => Ok(s),
+                Err(e) => Err(e.into()),
+            }
+        } else {
+            bail!("session closed")
+        }
     }
 
     pub fn close(&self) {

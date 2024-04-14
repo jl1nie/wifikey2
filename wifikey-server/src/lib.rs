@@ -6,5 +6,5 @@ mod keyer;
 pub use keyer::RemoteKeyer;
 mod rigcontrol;
 pub use rigcontrol::RigControl;
-mod wifikey;
-pub use wifikey::{RemoteStatics, WiFiKeyConfig, WifiKeyServer};
+mod server;
+pub use server::{RemoteStats, WiFiKeyConfig, WifiKeyServer};
