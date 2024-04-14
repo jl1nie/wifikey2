@@ -1,15 +1,13 @@
 use anyhow::Result;
-use chrono::{DateTime, Local};
 use config::Config;
-use log::trace;
-use std::net::ToSocketAddrs;
 use std::sync::Arc;
-use wksocket::{challenge, WkListener, WkReceiver};
+use std::thread::sleep;
+use std::time::Duration;
 mod keyer;
-use keyer::Morse;
-
 mod rigcontrol;
-use rigcontrol::RigControl;
+
+mod server;
+use server::{RemoteStats, WiFiKeyConfig, WifiKeyServer};
 
 fn main() -> Result<()> {
     if std::env::var("RUST_LOG").is_err() {
@@ -23,50 +21,29 @@ fn main() -> Result<()> {
         .build()
         .unwrap();
 
-    let rigcontrol = RigControl::new(
-        &config.get_string("rigcontrol_port").unwrap(),
-        &config.get_string("keying_port").unwrap(),
-        config.get_bool("use_rts_for_keying").unwrap(),
-    )?;
+    let accept_port = config.get_string("accept_port").unwrap();
+    let rigcontrol_port = config.get_string("rigcontrol_port").unwrap();
+    let keying_port = config.get_string("keying_port").unwrap();
+    let use_rts_for_keying = config.get_bool("use_rts_for_keying").unwrap();
+    let server_password = config.get_string("server_password").unwrap();
+    let sesami: u64 = config.get_string("sesami").unwrap().parse().unwrap();
 
-    let rigcontrol = Arc::new(rigcontrol);
+    let wk_config = Arc::new(WiFiKeyConfig::new(
+        server_password.clone(),
+        sesami,
+        accept_port.clone(),
+        rigcontrol_port.clone(),
+        keying_port.clone(),
+        use_rts_for_keying,
+    ));
 
-    let addr = config
-        .get_string("accept_port")
-        .unwrap()
-        .to_socket_addrs()
-        .unwrap()
-        .next()
-        .unwrap();
+    let remote_stats = Arc::new(RemoteStats::default());
 
-    println!("Listening {}", addr);
-
-    let mut listener = WkListener::bind(addr).unwrap();
-
+    let _server = Arc::new(WifiKeyServer::new(wk_config, remote_stats.clone()).unwrap());
     loop {
-        match listener.accept() {
-            Ok((session, addr)) => {
-                let local_time: DateTime<Local> = Local::now();
-                println!("{}: Accept new session from {}", local_time, addr);
-                let Ok(_magic) = challenge(
-                    session.clone(),
-                    &config.get_string("server_password").unwrap(),
-                    config.get_string("sesami").unwrap().parse().unwrap(),
-                ) else {
-                    println!("Auth. failure.");
-                    session.close()?;
-                    continue;
-                };
-                println!("Auth. Success.");
-                let mesg = WkReceiver::new(session)?;
-                let morse = Morse::new(rigcontrol.clone()).unwrap();
-                morse.run(mesg);
-                println!("Session closed.");
-            }
-            Err(e) => {
-                trace!("err = {}", e);
-                listener = WkListener::bind(addr).unwrap();
-            }
-        }
+        println!("{:#?}", remote_stats);
+        sleep(Duration::from_secs(2))
     }
+    #[allow(unreachable_code)]
+    Ok(())
 }

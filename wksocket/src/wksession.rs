@@ -1,5 +1,5 @@
 use crate::wkutil::{sleep, tick_count};
-use anyhow::{anyhow, bail, Result};
+use anyhow::{bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
 use kcp::Kcp;
 use log::{info, trace};
@@ -170,6 +170,13 @@ pub struct WkSession {
     closed: AtomicBool,
 }
 
+impl Drop for WkSession {
+    fn drop(&mut self) {
+        info!("session dropped. stop thread.");
+        self.closed.store(true, Ordering::Relaxed);
+    }
+}
+
 impl WkSession {
     fn new(udp: Arc<UdpSocket>, peer: SocketAddr, expire: Duration) -> Arc<WkSession> {
         let kcp = KcpSocket::new(KcpMode::Fast, udp.clone(), peer).unwrap();
@@ -232,8 +239,8 @@ impl WkSession {
                     }
                     if s.closed() {
                         break;
-                    } else {
-                        s.input(pkt).unwrap();
+                    } else if s.input(pkt).is_err() {
+                        info!("conv. id inconsistent.");
                     }
                 }
             }
@@ -292,7 +299,7 @@ pub struct WkListener {
 
 impl Drop for WkListener {
     fn drop(&mut self) {
-        info!("Litener dropped. stop thread.");
+        info!("litener dropped. stop thread.");
         self.stop.store(true, Ordering::Relaxed);
     }
 }
@@ -340,8 +347,11 @@ impl WkListener {
                                 if !session.closed() {
                                     if peer == current_peer {
                                         trace!("input current session {} bytes", n);
-                                        session.input(pkt).unwrap();
-                                        continue;
+                                        if session.input(pkt).is_ok() {
+                                            continue;
+                                        }
+                                        info!("conv. id inconsistent. close session");
+                                        session.close().unwrap();
                                     } else {
                                         trace!("discard packet");
                                         continue;
@@ -410,7 +420,7 @@ pub fn response(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u3
     let mut rcvbuf = Cursor::new(buf);
     let res = rcvbuf.get_u32();
     if res == 0 {
-        Err(anyhow!("auth failed"))
+        bail!("auth failed")
     } else {
         Ok(res)
     }

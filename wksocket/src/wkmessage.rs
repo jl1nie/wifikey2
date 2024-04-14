@@ -1,6 +1,6 @@
 use crate::wksession::{WkSession, PKT_SIZE};
 use crate::wkutil::sleep;
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
 use log::trace;
 use std::io::Cursor;
@@ -99,7 +99,7 @@ impl WkSender {
             self.tx.send(msg).unwrap();
             Ok(())
         } else {
-            Err(anyhow!("session closed by peer"))
+            bail!("session closed by peer")
         }
     }
 }
@@ -155,11 +155,23 @@ impl WkReceiver {
 
     pub fn recv(&self) -> Result<Vec<MessageRCV>> {
         if !self.session_closed.load(Ordering::Relaxed) {
-            if let Ok(s) = self.rx.recv() {
-                return Ok(s);
+            match self.rx.recv() {
+                Ok(s) => Ok(s),
+                Err(e) => Err(e.into()),
             }
+        } else {
+            bail!("session closed")
         }
-        Err(anyhow!("session closed"))
+    }
+    pub fn try_recv(&self) -> Result<Vec<MessageRCV>> {
+        if !self.session_closed.load(Ordering::Relaxed) {
+            match self.rx.try_recv() {
+                Ok(s) => Ok(s),
+                Err(e) => Err(e.into()),
+            }
+        } else {
+            bail!("session closed")
+        }
     }
 
     pub fn close(&self) {

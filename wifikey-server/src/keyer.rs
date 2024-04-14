@@ -1,12 +1,17 @@
 use crate::rigcontrol::RigControl;
+use crate::server::RemoteStats;
 use anyhow::Result;
 use log::{info, trace};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::{atomic::AtomicBool, Arc};
 use std::thread;
 use wksocket::{sleep, tick_count, MessageRCV, WkReceiver};
 
 pub const MAX_ASSERT_DURAION: u32 = 5000;
-pub struct Morse {
+pub const MSPERWPM: u32 = 1200; /* PARIS = 50 tick */
+
+#[allow(dead_code)]
+pub struct Keyer {
     rigcontrol: Arc<RigControl>,
     ratio: u32,
     letter_space: u32,
@@ -15,16 +20,15 @@ pub struct Morse {
     morse_table: Vec<(char, u8, u8)>,
 }
 
-impl Morse {
-    const MSPERWPM: u32 = 1200; /* PARIS = 50 tick */
-
+impl Keyer {
+    #[allow(dead_code)]
     pub fn new(rigcontrol: Arc<RigControl>) -> Result<Self> {
         Ok(Self {
             rigcontrol,
             ratio: 3,
             word_space: 7,
             letter_space: 3,
-            tick: Self::MSPERWPM / 20,
+            tick: MSPERWPM / 20,
             morse_table: vec![
                 ('0', 5, 0x1f), // '0' : -----
                 ('1', 5, 0x1e), // '1' : .----
@@ -76,7 +80,7 @@ impl Morse {
 
     #[allow(dead_code)]
     pub fn set_wpm(&mut self, wpm: u32) {
-        self.tick = Self::MSPERWPM / wpm
+        self.tick = MSPERWPM / wpm
     }
 
     #[allow(dead_code)]
@@ -137,21 +141,55 @@ impl Morse {
             }
         }
     }
+}
+
+pub struct RemoteKeyer {
+    remote_stats: Arc<RemoteStats>,
+    rigcontrol: Arc<RigControl>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Drop for RemoteKeyer {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        info!("remote keyer dropped stop thread");
+    }
+}
+
+impl RemoteKeyer {
+    pub fn new(remote_stats: Arc<RemoteStats>, rigcontrol: Arc<RigControl>) -> Self {
+        Self {
+            remote_stats,
+            rigcontrol,
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
 
     #[allow(dead_code)]
+    pub fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
     pub fn run(&self, rx_port: WkReceiver) {
         let mut rmt_epoch = 0u32;
         let mut epoch = 0u32;
         let mut asserted = 0u32;
-        let rigcon = self.rigcontrol.clone();
+        let mut pkt = 0usize;
+        let mut duration_max = 1usize;
 
+        let rigcon = self.rigcontrol.clone();
+        let stopfl = self.stop.clone();
+        let stat = self.remote_stats.clone();
         let handle = thread::spawn(move || 'restart: loop {
-            if rx_port.closed() {
+            if rx_port.closed() || stopfl.load(Ordering::Relaxed) {
                 info!("session closed");
+                stopfl.store(true, Ordering::Relaxed);
+                stat.set_session_active(false);
                 break;
             }
-            if let Ok(msgs) = rx_port.recv() {
+            if let Ok(msgs) = rx_port.try_recv() {
                 for m in msgs {
+                    pkt = pkt.wrapping_add(1);
                     match m {
                         MessageRCV::Sync(rmt) => {
                             // Sync remote/local time every 3 sec
@@ -159,13 +197,22 @@ impl Morse {
                                 rmt_epoch = rmt;
                                 epoch = tick_count();
                                 info!("Sync rmt={} local={}", rmt_epoch, epoch);
+                                if duration_max == 0 {
+                                    stat.set_stats(0, pkt);
+                                } else {
+                                    stat.set_stats(1000 / duration_max * 36, pkt);
+                                };
+                                duration_max = 0;
+                                stat.set_session_active(true);
                             }
                         }
                         MessageRCV::StartATU => {
-                            println!("---- START ATU ----");
+                            info!("---- START ATU ----");
+                            stat.set_atu_start(true);
                             if let Err(e) = rigcon.start_atu_with_rigcontrol() {
                                 info!("Start ATU error = {} ", e);
                             };
+                            stat.set_atu_start(false);
                             break;
                         }
                         m => {
@@ -205,6 +252,10 @@ impl Morse {
                                         trace!("down");
                                     } else {
                                         rigcon.assert_key(false);
+                                        let duration = now - asserted;
+                                        if duration > duration_max as u32 {
+                                            duration_max = duration as usize;
+                                        }
                                         asserted = 0;
                                         trace!("up");
                                     }
@@ -215,13 +266,12 @@ impl Morse {
                         }
                     }
                 }
+            } else {
                 if asserted != 0 && tick_count() - asserted > MAX_ASSERT_DURAION {
                     rigcon.assert_key(false);
                     asserted = 0;
                 }
-            } else {
-                info!("session closed");
-                break 'restart;
+                sleep(1);
             }
         });
         handle.join().unwrap();
