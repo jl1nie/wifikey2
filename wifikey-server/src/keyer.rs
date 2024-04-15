@@ -3,7 +3,10 @@ use crate::server::RemoteStats;
 use anyhow::Result;
 use log::{info, trace};
 use std::sync::atomic::Ordering;
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32},
+    Arc,
+};
 use std::thread;
 use wksocket::{sleep, tick_count, MessageRCV, WkReceiver};
 
@@ -173,12 +176,15 @@ impl RemoteKeyer {
     pub fn run(&self, rx_port: WkReceiver) {
         let mut rmt_epoch = 0u32;
         let mut epoch = 0u32;
-        let mut asserted = 0u32;
+        let asserted = Arc::new(AtomicU32::new(0u32));
+        let asserted_wdg = asserted.clone();
         let mut pkt = 0usize;
         let mut duration_max = 1usize;
 
+        let rigcon_wdg = self.rigcontrol.clone();
         let rigcon = self.rigcontrol.clone();
         let stopfl = self.stop.clone();
+
         let stat = self.remote_stats.clone();
         let handle = thread::spawn(move || 'restart: loop {
             if rx_port.closed() || stopfl.load(Ordering::Relaxed) {
@@ -249,15 +255,15 @@ impl RemoteKeyer {
                                 if elapse >= elapse_rmt {
                                     if keydown {
                                         rigcon.assert_key(true);
-                                        asserted = now;
+                                        asserted.store(now, Ordering::Relaxed);
                                         trace!("down");
                                     } else {
                                         rigcon.assert_key(false);
-                                        let duration = now - asserted;
+                                        let duration = now - asserted.load(Ordering::Relaxed);
                                         if duration > duration_max as u32 {
                                             duration_max = duration as usize;
                                         }
-                                        asserted = 0;
+                                        asserted.store(0, Ordering::Relaxed);
                                         trace!("up");
                                     }
                                     break;
@@ -268,12 +274,22 @@ impl RemoteKeyer {
                     }
                 }
             } else {
-                if asserted != 0 && tick_count() - asserted > MAX_ASSERT_DURAION {
-                    rigcon.assert_key(false);
-                    asserted = 0;
-                }
-                sleep(1);
+                info!("session closed");
+                stopfl.store(true, Ordering::Relaxed);
             }
+        });
+
+        let stopfl = self.stop.clone();
+        let _watchdog = thread::spawn(move || loop {
+            if stopfl.load(Ordering::Relaxed) {
+                break;
+            }
+            let asserted = asserted_wdg.load(Ordering::Relaxed);
+            if asserted != 0 && tick_count() - asserted > MAX_ASSERT_DURAION {
+                rigcon_wdg.assert_key(false);
+                asserted_wdg.store(0, Ordering::Relaxed);
+            }
+            sleep(1000);
         });
         handle.join().unwrap();
     }

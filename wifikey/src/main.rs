@@ -180,6 +180,8 @@ fn main() -> Result<()> {
                 led.write(empty_color.clone()).unwrap();
                 #[cfg(board = "esp32-wrover")]
                 led.set_low().unwrap();
+
+                dozing = false;
             }
 
             if TRIGGER.load(Ordering::Relaxed)

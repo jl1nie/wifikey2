@@ -85,7 +85,7 @@ impl eframe::App for WiFiKeyApp {
             });
         });
         let session_stats = self.remote_stats.get_session_stats();
-        let (auth, atu, wpm, pkt) = self.remote_stats.get_misc_stats();
+        let (auth, _atu, wpm, pkt) = self.remote_stats.get_misc_stats();
         let wpm = wpm as f32 / 10.0f32;
         let visual = egui::style::Visuals::default();
         let session_active_color = if auth {
