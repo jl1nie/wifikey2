@@ -197,7 +197,7 @@ impl WifiKeyServer {
                     let local_time: DateTime<Local> = Local::now();
                     info!("{}: Accept new session from {}", local_time, addr);
                     stat.set_peer(&addr.to_string());
-                    stat.set_session_start(&local_time.to_string());
+                    stat.set_session_start(&local_time.format("%F %T").to_string());
                     let Ok(_magic) =
                         challenge(session.clone(), &config.server_password, config.sesami)
                     else {
@@ -235,7 +235,9 @@ impl WifiKeyServer {
 
     #[allow(dead_code)]
     pub fn start_atu(&self) {
-        self.rigcontrol.start_atu();
+        self.remote_stats.set_atu_start(true);
+        self.rigcontrol.start_atu_with_rigcontrol().unwrap();
+        self.remote_stats.set_atu_start(false);
     }
 
     #[allow(dead_code)]

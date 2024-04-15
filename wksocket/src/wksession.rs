@@ -51,6 +51,7 @@ pub enum KcpMode {
     Default,
     Normal,
     Fast,
+    FastNB,
 }
 
 pub struct KcpSocket {
@@ -61,8 +62,6 @@ pub struct KcpSocket {
 
 impl KcpSocket {
     pub fn new(mode: KcpMode, socket: Arc<UdpSocket>, peer: SocketAddr) -> Result<Self> {
-        socket.set_nonblocking(true).unwrap();
-
         let output = UDPOutput::new(socket.clone(), peer);
         let conv = 0;
         let mut kcp = Kcp::new(conv, output);
@@ -74,6 +73,12 @@ impl KcpSocket {
                 kcp.set_mtu(MTU_SIZE).unwrap();
                 kcp.set_nodelay(true, 10, 1, true);
                 kcp.set_maximum_resend_times(10);
+            }
+            KcpMode::FastNB => {
+                kcp.set_mtu(MTU_SIZE).unwrap();
+                kcp.set_nodelay(true, 10, 1, true);
+                kcp.set_maximum_resend_times(10);
+                socket.set_nonblocking(true).unwrap();
             }
         }
 
@@ -178,8 +183,13 @@ impl Drop for WkSession {
 }
 
 impl WkSession {
-    fn new(udp: Arc<UdpSocket>, peer: SocketAddr, expire: Duration) -> Arc<WkSession> {
-        let kcp = KcpSocket::new(KcpMode::Fast, udp.clone(), peer).unwrap();
+    fn new(
+        udp: Arc<UdpSocket>,
+        peer: SocketAddr,
+        mode: KcpMode,
+        expire: Duration,
+    ) -> Arc<WkSession> {
+        let kcp = KcpSocket::new(mode, udp.clone(), peer).unwrap();
         let socket = Arc::new(Mutex::new(kcp));
         let server = socket.clone();
         let expire = expire.as_millis() as u32;
@@ -208,7 +218,12 @@ impl WkSession {
         };
         let udp = Arc::new(udp);
         let client_udp = udp.clone();
-        let session = WkSession::new(udp, peer, Duration::from_secs(SESSION_TIMEOUT));
+        let session = WkSession::new(
+            udp,
+            peer,
+            KcpMode::FastNB,
+            Duration::from_secs(SESSION_TIMEOUT),
+        );
         let client_socket = session.socket.clone();
         let client_session = session.clone();
 
@@ -316,7 +331,6 @@ impl WkListener {
                 let mut buf = [0u8; 256];
                 let mut sessions: Option<(Arc<WkSession>, SocketAddr)> = None;
                 loop {
-                    sleep(10);
                     if stop.load(Ordering::Relaxed) {
                         info!("stop listner thread");
                         break;
@@ -363,6 +377,7 @@ impl WkListener {
                             let session = WkSession::new(
                                 udp.clone(),
                                 peer,
+                                KcpMode::Fast,
                                 Duration::from_secs(SESSION_TIMEOUT),
                             );
                             session.input(pkt).unwrap();
@@ -431,14 +446,14 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u
     let mut buf = [0u8; PKT_SIZE];
 
     if session.recv_timeout(&mut buf, 1000).is_err() {
-        info!("auth challenge timeout");
-        bail!("auth challenge timeout");
+        info!("auth challenge timeout1");
+        bail!("auth challenge timeout1");
     }
 
     let mut rcvbuf = Cursor::new(buf);
     if sesami != rcvbuf.get_u64() {
-        info!("cannot open sesami");
-        bail!("auth challenge timeout");
+        info!("auth challenge timeout2");
+        bail!("auth challenge timeout2");
     }
 
     let chl = random();
@@ -446,8 +461,8 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u
     session.send(&sendbuf).unwrap();
 
     if session.recv_timeout(&mut buf, 1000).is_err() {
-        info!("challenge response timeout");
-        bail!("auth challenge time out");
+        info!("auth challenge timeout3");
+        bail!("auth challenge timeout3");
     };
 
     let response = &buf[..16];
@@ -460,10 +475,10 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u
     session.send(&sendbuf).unwrap();
 
     if ok {
-        info!("challenge successe {}", res);
+        info!("auth challenge success {}", res);
         Ok(res)
     } else {
-        info!("challenge fail {:?} {:?}", response, challenge);
+        info!("auth challenge failed {:?} {:?}", response, challenge);
         bail!("auth challenge failed")
     }
 }

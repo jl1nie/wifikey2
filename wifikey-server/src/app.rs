@@ -88,13 +88,17 @@ impl eframe::App for WiFiKeyApp {
         let (auth, atu, wpm, pkt) = self.remote_stats.get_misc_stats();
         let wpm = wpm as f32 / 10.0f32;
         let visual = egui::style::Visuals::default();
-        let hcolor = if auth {
+        let session_active_color = if auth {
             visual.error_fg_color
         } else {
             visual.strong_text_color()
         };
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.label(egui::RichText::new("WiFiKey2").heading().color(hcolor));
+            ui.label(
+                egui::RichText::new("WiFiKey2")
+                    .heading()
+                    .color(session_active_color),
+            );
             ui.separator();
 
             ui.horizontal(|ui| {
@@ -112,18 +116,17 @@ impl eframe::App for WiFiKeyApp {
             ui.separator();
 
             ui.horizontal(|ui| {
-                ui.label("WPM: ");
                 ui.label(wpm.to_string());
-            });
-            ui.horizontal(|ui| {
-                ui.label("PKT: ");
+                ui.label(" wpm");
                 ui.label(pkt.to_string());
+                ui.label(" pkt/s");
             });
-
             ui.separator();
-            if ui.button("Start ATU w/o CAT ctrl").clicked() {
-                self.server.start_atu();
-            }
+            ui.horizontal(|ui| {
+                if ui.button("Start ATU").clicked() {
+                    self.server.start_atu();
+                }
+            });
         });
         egui::Window::new("Log").show(ctx, |ui| {
             egui_logger::logger_ui(ui);

@@ -187,9 +187,9 @@ impl RemoteKeyer {
                 stat.set_session_active(false);
                 break;
             }
-            if let Ok(msgs) = rx_port.try_recv() {
+            if let Ok(msgs) = rx_port.recv() {
                 for m in msgs {
-                    pkt = pkt.wrapping_add(1);
+                    pkt += 1;
                     match m {
                         MessageRCV::Sync(rmt) => {
                             // Sync remote/local time every 3 sec
@@ -198,11 +198,12 @@ impl RemoteKeyer {
                                 epoch = tick_count();
                                 info!("Sync rmt={} local={}", rmt_epoch, epoch);
                                 if duration_max == 0 {
-                                    stat.set_stats(0, pkt);
+                                    stat.set_stats(0, pkt / 3);
                                 } else {
-                                    stat.set_stats(1000 / duration_max * 36, pkt);
+                                    stat.set_stats(1000 / duration_max * 36, pkt / 3);
                                 };
                                 duration_max = 0;
+                                pkt = 0;
                                 stat.set_session_active(true);
                             }
                         }
