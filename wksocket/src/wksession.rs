@@ -111,7 +111,7 @@ impl KcpSocket {
             self.closed = true;
             bail!("connection closed.");
         }
-        let n = self.kcp.send(buf).unwrap();
+        let n = self.kcp.send(buf)?;
         self.last_update = tick_count();
         self.kcp.flush()?;
         Ok(n)
@@ -200,13 +200,20 @@ impl WkSession {
             if s.closed() {
                 break;
             }
-            let n = s.update().unwrap();
-            if tick_count() - s.last_update() > expire {
-                s.close();
-                break;
+            match s.update() {
+                Ok(n) => {
+                    if tick_count() - s.last_update() > expire {
+                        s.close();
+                        break;
+                    }
+                    drop(s);
+                    sleep(n)
+                }
+                Err(e) => {
+                    info!("kcp update failed. {}", e);
+                    sleep(1000);
+                }
             }
-            drop(s);
-            sleep(n)
         });
         Arc::new(WkSession { socket, closed })
     }
@@ -458,7 +465,7 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u
 
     let chl = random();
     sendbuf.put_u32(chl);
-    session.send(&sendbuf).unwrap();
+    session.send(&sendbuf)?;
 
     if session.recv_timeout(&mut buf, 1000).is_err() {
         info!("auth challenge timeout3");
@@ -472,7 +479,7 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u
     let res = if ok { random::<u32>() + 1u32 } else { 0u32 };
     sendbuf.clear();
     sendbuf.put_u32(res);
-    session.send(&sendbuf).unwrap();
+    session.send(&sendbuf)?;
 
     if ok {
         info!("auth challenge success {}", res);
