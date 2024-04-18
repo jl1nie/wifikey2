@@ -2,8 +2,9 @@ use anyhow::Result;
 use esp_idf_hal::{delay::FreeRtos, gpio::*, peripherals::Peripherals};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::peripheral, wifi::*};
 use esp_idf_sys::xTaskGetTickCountFromISR;
-
+#[cfg(board = "m5atom")]
 use smart_leds::{SmartLedsWrite, RGB8};
+#[cfg(board = "m5atom")]
 use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use std::net::ToSocketAddrs;
@@ -11,8 +12,7 @@ use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use log::{error, info, trace};
-//use tokio_kcp::{KcpConfig, KcpListener, KcpNoDelayConfig, KcpStream};
-use wksocket::{sleep, tick_count, MessageSND, WkAuth, WkSender, WkSession, MAX_SLOTS};
+use wksocket::{response, sleep, tick_count, MessageSND, WkSender, WkSession, MAX_SLOTS};
 
 #[toml_cfg::toml_config]
 pub struct Config {
@@ -31,7 +31,7 @@ pub struct Config {
 const STABLE_PERIOD: i32 = 1;
 const SLEEP_PERIOD: usize = 18_000; // Doze after empty packets sent.
 const PKT_INTERVAL: usize = 50; // Send keying packet every 50ms
-const KEEP_ALIVE: u32 = 5_000; // Send Keep Alive Packet every 5sec.
+const KEEP_ALIVE: u32 = 3_000; // Send Keep Alive Packet every 3sec.
 
 static TRIGGER: AtomicBool = AtomicBool::new(false);
 static TICKCOUNT: AtomicU32 = AtomicU32::new(0);
@@ -97,9 +97,12 @@ fn main() -> Result<()> {
     #[cfg(board = "esp32-wrover")]
     let buttonpin = peripherals.pins.gpio12;
 
+    #[cfg(board = "m5atom")]
     let button = PinDriver::input(buttonpin)?;
     #[cfg(board = "esp32-wrover")]
-    button.set_pull(Pull::Up);
+    let mut button = PinDriver::input(buttonpin)?;
+    #[cfg(board = "esp32-wrover")]
+    button.set_pull(Pull::Up).unwrap();
 
     let mut pkt_count: usize = 0;
     let mut slot_count: usize = 0;
@@ -119,8 +122,7 @@ fn main() -> Result<()> {
     info!("Remote Server ={}", remote_addr);
     loop {
         let session = WkSession::connect(remote_addr).unwrap();
-        let Ok(_magic) = WkAuth::response(session.clone(), CONFIG.server_password, CONFIG.sesami)
-        else {
+        let Ok(_magic) = response(session.clone(), CONFIG.server_password, CONFIG.sesami) else {
             session.close().unwrap();
             info!("Auth. failed.");
             sleep(5000);
@@ -177,6 +179,8 @@ fn main() -> Result<()> {
                 led.write(empty_color.clone()).unwrap();
                 #[cfg(board = "esp32-wrover")]
                 led.set_low().unwrap();
+
+                dozing = false;
             }
 
             if TRIGGER.load(Ordering::Relaxed)

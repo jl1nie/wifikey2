@@ -35,9 +35,6 @@ ws2812-esp32-rmt-driver = { git = "https://github.com/w-ockham/ws2812-esp32-rmt-
   "smart-leds-trait",
 ] }
 toml-cfg = "0.2"
-tokio = { version = "*", features = ["rt", "net", "io-util"] }
-mio = { version = "0.8.8", features = ["log"] }
-tokio_kcp = "0.9"
 wksocket = { path = "../wksocket" }
 [build-dependencies]
 embuild = "0.31.3"

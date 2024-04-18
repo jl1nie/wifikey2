@@ -1,0 +1,27 @@
+[package]
+name = "wkmessage"
+version = "0.1.0"
+edition = "2021"
+
+[patch.crates-io]
+tokio = { git = "https://github.com/tokio-rs/tokio", branch = "master" }
+mio = { git = "https://github.com/tokio-rs/mio", branch = "master" }
+socket2 = { git = "https://github.com/rust-lang/socket2", branch = "master" }
+
+
+[dependencies]
+anyhow = "1"
+bytes = "1.1"
+kcp = "0.5"
+log = { version = "0.4", default-features = false }
+time = "0.3"
+rand = "0.8"
+md-5 = "0.10"
+tokio = { version = "*", features = ["rt", "net", "io-util"] }
+mio = { version = "0.8.8", features = ["log"] }
+tokio_kcp = "0.9"
+
+[target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
+esp-idf-sys = { version = "0.34", features = ["binstart"] }
+esp-idf-svc = { version = "0.48", features = ["experimental"] }
+esp-idf-hal = "0.43"
