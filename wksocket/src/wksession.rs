@@ -391,7 +391,6 @@ impl WkListener {
 
                             let client_session = session.clone();
                             tx.send((client_session, peer)).unwrap();
-
                             sessions = Some((session, peer));
                         }
                     }

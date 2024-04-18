@@ -101,7 +101,6 @@ fn main() -> Result<()> {
     let button = PinDriver::input(buttonpin)?;
     #[cfg(board = "esp32-wrover")]
     let mut button = PinDriver::input(buttonpin)?;
-
     #[cfg(board = "esp32-wrover")]
     button.set_pull(Pull::Up).unwrap();
 

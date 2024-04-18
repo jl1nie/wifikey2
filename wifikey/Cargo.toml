@@ -18,6 +18,10 @@ embassy = [
   "esp-idf-svc/critical-section",
   "esp-idf-svc/embassy-time-driver",
 ]
+[patch.crates-io]
+tokio = { git = "https://github.com/tokio-rs/tokio", branch = "master" }
+mio = { git = "https://github.com/tokio-rs/mio", branch = "master" }
+socket2 = { git = "https://github.com/rust-lang/socket2", branch = "master" }
 
 [dependencies]
 anyhow = "1"
