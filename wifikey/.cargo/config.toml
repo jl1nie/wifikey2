@@ -12,12 +12,12 @@ rustflags = [
     "--cfg",
     "mio_unsupported_force_poll_poll",
 ]
-#rustflags = [
-#    "-C",
-#    "default-linker-libraries",
-#    "--cfg",
-#    "board=\"esp32-wrover\"",
-#]
+# rustflags = [
+#     "-C",
+#     "default-linker-libraries",
+#     "--cfg",
+#     "board=\"esp32-wrover\"",
+# ]
 
 [unstable]
 build-std = ["std", "panic_abort"]

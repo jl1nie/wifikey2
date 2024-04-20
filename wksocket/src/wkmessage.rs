@@ -1,6 +1,6 @@
 use crate::wksession::{WkSession, PKT_SIZE};
 use crate::wkutil::sleep;
-use anyhow::{anyhow, Result};
+use anyhow::{bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
 use log::trace;
 use std::io::Cursor;
@@ -40,7 +40,7 @@ impl WkSender {
             if let Ok(cmd) = rx.try_recv() {
                 match cmd {
                     MessageSND::CloseSession => {
-                        session.close();
+                        session.close().unwrap();
                         closed.store(true, Ordering::Relaxed);
                         break;
                     }
@@ -51,7 +51,7 @@ impl WkSender {
                             trace!("START ATU {} bytes pkt sent", n);
                         } else {
                             trace!("session closed by peer");
-                            session.close();
+                            session.close().unwrap();
                             closed.store(true, Ordering::Relaxed);
                             break;
                         }
@@ -64,7 +64,7 @@ impl WkSender {
                             slots.clear();
                         } else {
                             trace!("session closed by peer");
-                            session.close();
+                            session.close().unwrap();
                             closed.store(true, Ordering::Relaxed);
                             break;
                         }
@@ -96,10 +96,10 @@ impl WkSender {
 
     pub fn send(&mut self, msg: MessageSND) -> Result<()> {
         if !self.session_closed.load(Ordering::Relaxed) {
-            self.tx.send(msg);
+            self.tx.send(msg).unwrap();
             Ok(())
         } else {
-            Err(anyhow!("session closed by peer"))
+            bail!("session closed by peer")
         }
     }
 }
@@ -140,7 +140,7 @@ impl WkReceiver {
 
                 if closed.load(Ordering::Relaxed) {
                     trace!("session closed.");
-                    session.close();
+                    session.close().unwrap();
                     break;
                 }
                 sleep(1);
@@ -155,11 +155,23 @@ impl WkReceiver {
 
     pub fn recv(&self) -> Result<Vec<MessageRCV>> {
         if !self.session_closed.load(Ordering::Relaxed) {
-            if let Ok(s) = self.rx.recv() {
-                return Ok(s);
+            match self.rx.recv() {
+                Ok(s) => Ok(s),
+                Err(e) => Err(e.into()),
             }
+        } else {
+            bail!("session closed")
         }
-        Err(anyhow!("session closed"))
+    }
+    pub fn try_recv(&self) -> Result<Vec<MessageRCV>> {
+        if !self.session_closed.load(Ordering::Relaxed) {
+            match self.rx.try_recv() {
+                Ok(s) => Ok(s),
+                Err(e) => Err(e.into()),
+            }
+        } else {
+            bail!("session closed")
+        }
     }
 
     pub fn close(&self) {

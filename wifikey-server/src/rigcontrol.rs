@@ -12,21 +12,21 @@ pub struct RigControl {
 }
 
 pub enum Mode {
-    LSB,
-    USB,
-    CWu,
-    CWl,
-    AM,
-    AMn,
-    FM,
-    FMn,
-    RTTYu,
-    RTTYl,
-    DATAu,
-    DATAl,
-    DATAFM,
-    DATAFMn,
-    PSK,
+    Lsb,
+    Usb,
+    CwU,
+    CwL,
+    Am,
+    AmN,
+    Fm,
+    FmN,
+    RttyU,
+    RttyL,
+    DataU,
+    DataL,
+    DataFm,
+    DataFmN,
+    Psk,
 }
 
 impl RigControl {
@@ -178,42 +178,42 @@ impl RigControl {
 
     fn str2mode(&self, c: char) -> Result<Mode> {
         match c {
-            '1' => Ok(Mode::LSB),
-            '2' => Ok(Mode::USB),
-            '3' => Ok(Mode::CWu),
-            '4' => Ok(Mode::FM),
-            '5' => Ok(Mode::AM),
-            '6' => Ok(Mode::RTTYl),
-            '7' => Ok(Mode::CWl),
-            '8' => Ok(Mode::DATAl),
-            '9' => Ok(Mode::RTTYu),
-            'A' => Ok(Mode::DATAFM),
-            'B' => Ok(Mode::FMn),
-            'C' => Ok(Mode::DATAu),
-            'D' => Ok(Mode::AMn),
-            'E' => Ok(Mode::PSK),
-            'F' => Ok(Mode::DATAFMn),
+            '1' => Ok(Mode::Lsb),
+            '2' => Ok(Mode::Usb),
+            '3' => Ok(Mode::CwU),
+            '4' => Ok(Mode::Fm),
+            '5' => Ok(Mode::Am),
+            '6' => Ok(Mode::RttyL),
+            '7' => Ok(Mode::CwL),
+            '8' => Ok(Mode::DataL),
+            '9' => Ok(Mode::RttyU),
+            'A' => Ok(Mode::DataFm),
+            'B' => Ok(Mode::FmN),
+            'C' => Ok(Mode::DataU),
+            'D' => Ok(Mode::AmN),
+            'E' => Ok(Mode::Psk),
+            'F' => Ok(Mode::DataFmN),
             _ => bail!("Unknown mode {}", c),
         }
     }
 
     fn mode2str(&self, mode: Mode) -> Result<char> {
         Ok(match mode {
-            Mode::LSB => '1',
-            Mode::USB => '2',
-            Mode::CWu => '3',
-            Mode::FM => '4',
-            Mode::AM => '5',
-            Mode::RTTYl => '6',
-            Mode::CWl => '7',
-            Mode::DATAl => '8',
-            Mode::RTTYu => '9',
-            Mode::DATAFM => 'A',
-            Mode::FMn => 'B',
-            Mode::DATAu => 'C',
-            Mode::AMn => 'D',
-            Mode::PSK => 'E',
-            Mode::DATAFMn => 'F',
+            Mode::Lsb => '1',
+            Mode::Usb => '2',
+            Mode::CwU => '3',
+            Mode::Fm => '4',
+            Mode::Am => '5',
+            Mode::RttyL => '6',
+            Mode::CwL => '7',
+            Mode::DataL => '8',
+            Mode::RttyU => '9',
+            Mode::DataFm => 'A',
+            Mode::FmN => 'B',
+            Mode::DataU => 'C',
+            Mode::AmN => 'D',
+            Mode::Psk => 'E',
+            Mode::DataFmN => 'F',
         })
     }
 
@@ -251,7 +251,7 @@ impl RigControl {
         let saved_power = self.get_power()?;
         let saved_mode = self.get_mode()?;
 
-        self.set_mode(Mode::CWu)?;
+        self.set_mode(Mode::CwU)?;
         self.set_power(10)?;
         sleep(Duration::from_millis(500));
 
