@@ -11,10 +11,10 @@ bytes = "1.1"
 kcp = "0.5"
 log = { version = "0.4", default-features = false }
 time = "0.3"
-rand = "0.8"
+rand = "0.9"
 md-5 = "0.10"
 
 [target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
-esp-idf-sys = { version = "0.34", features = ["binstart"] }
-esp-idf-svc = { version = "0.48", features = ["experimental"] }
-esp-idf-hal = "0.43"
+esp-idf-sys = { version = "0.36", features = ["binstart"] }
+esp-idf-svc = { version = "0.51", features = ["experimental"] }
+esp-idf-hal = "0.45"

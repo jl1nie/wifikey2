@@ -2,9 +2,9 @@ use anyhow::Result;
 use esp_idf_hal::{delay::FreeRtos, gpio::*, peripherals::Peripherals};
 use esp_idf_svc::{eventloop::EspSystemEventLoop, hal::peripheral, wifi::*};
 use esp_idf_sys::xTaskGetTickCountFromISR;
-#[cfg(board = "m5atom")]
+#[cfg(feature = "board_m5atom")]
 use smart_leds::{SmartLedsWrite, RGB8};
-#[cfg(board = "m5atom")]
+#[cfg(feature = "board_m5atom")]
 use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
 use std::net::ToSocketAddrs;
@@ -50,39 +50,39 @@ fn main() -> Result<()> {
     let peripherals = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
 
-    #[cfg(board = "m5atom")]
+    #[cfg(feature = "board_m5atom")]
     let mut led = Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio27).unwrap();
-    #[cfg(board = "m5atom")]
+    #[cfg(feature = "board_m5atom")]
     let empty_color = std::iter::repeat(RGB8::default()).take(1);
-    #[cfg(board = "m5atom")]
+    #[cfg(feature = "board_m5atom")]
     let red_color = std::iter::repeat(RGB8 { r: 5, g: 0, b: 0 }).take(1);
 
-    #[cfg(board = "esp32-wrover")]
+    #[cfg(feature = "board_esp32_wrover")]
     let mut led = PinDriver::output(peripherals.pins.gpio16)?;
 
-    #[cfg(board = "m5atom")]
+    #[cfg(feature = "board_m5atom")]
     led.write(red_color.clone()).unwrap();
-    #[cfg(board = "esp32-wrover")]
+    #[cfg(feature = "board_esp32_wrover")]
     led.set_high().unwrap();
 
     let _wifi = wifi(peripherals.modem, sysloop.clone());
 
     if _wifi.is_err() {
-        #[cfg(board = "m5atom")]
+        #[cfg(feature = "board_m5atom")]
         led.write(empty_color.clone()).unwrap();
         FreeRtos::delay_ms(3000);
         unsafe {
             esp_idf_sys::esp_restart();
         }
     };
-    #[cfg(board = "m5atom")]
+    #[cfg(feature = "board_m5atom")]
     led.write(empty_color.clone()).unwrap();
-    #[cfg(board = "esp32-wrover")]
+    #[cfg(feature = "board_esp32_wrover")]
     led.set_low().unwrap();
 
-    #[cfg(board = "m5atom")]
+    #[cfg(feature = "board_m5atom")]
     let keyerpin = peripherals.pins.gpio19;
-    #[cfg(board = "esp32-wrover")]
+    #[cfg(feature = "board_esp32_wrover")]
     let keyerpin = peripherals.pins.gpio4;
 
     let mut keyinput = PinDriver::input(keyerpin)?;
@@ -92,16 +92,16 @@ fn main() -> Result<()> {
     unsafe { keyinput.subscribe(gpio_key_callback).unwrap() };
     keyinput.enable_interrupt().unwrap();
 
-    #[cfg(board = "m5atom")]
+    #[cfg(feature = "board_m5atom")]
     let buttonpin = peripherals.pins.gpio39;
-    #[cfg(board = "esp32-wrover")]
+    #[cfg(feature = "board_esp32_wrover")]
     let buttonpin = peripherals.pins.gpio12;
 
-    #[cfg(board = "m5atom")]
+    #[cfg(feature = "board_m5atom")]
     let button = PinDriver::input(buttonpin)?;
-    #[cfg(board = "esp32-wrover")]
+    #[cfg(feature = "board_esp32_wrover")]
     let mut button = PinDriver::input(buttonpin)?;
-    #[cfg(board = "esp32-wrover")]
+    #[cfg(feature = "board_esp32_wrover")]
     button.set_pull(Pull::Up).unwrap();
 
     let mut pkt_count: usize = 0;
@@ -168,16 +168,16 @@ fn main() -> Result<()> {
 
             if button.is_low() {
                 info!("Start ATU");
-                #[cfg(board = "m5atom")]
+                #[cfg(feature = "board_m5atom")]
                 led.write(red_color.clone()).unwrap();
-                #[cfg(board = "esp32-wrover")]
+                #[cfg(feature = "board_esp32_wrover")]
                 led.set_high().unwrap();
 
                 sender.send(MessageSND::StartATU).unwrap();
                 sleep(500);
-                #[cfg(board = "m5atom")]
+                #[cfg(feature = "board_m5atom")]
                 led.write(empty_color.clone()).unwrap();
-                #[cfg(board = "esp32-wrover")]
+                #[cfg(feature = "board_esp32_wrover")]
                 led.set_low().unwrap();
 
                 dozing = false;
@@ -204,18 +204,18 @@ fn main() -> Result<()> {
                     last_sent = now;
                     slot_count = 0;
                 } else if keyinput.is_high() {
-                    #[cfg(board = "m5atom")]
+                    #[cfg(feature = "board_m5atom")]
                     led.write(empty_color.clone()).unwrap();
-                    #[cfg(board = "esp32-wrover")]
+                    #[cfg(feature = "board_esp32_wrover")]
                     led.set_low().unwrap();
                     // Add Pos Edge
                     sender.send(MessageSND::PosEdge(slot_pos as u8)).unwrap();
                     slot_count += 1;
                     edge_count += 1;
                 } else {
-                    #[cfg(board = "m5atom")]
+                    #[cfg(feature = "board_m5atom")]
                     led.write(red_color.clone()).unwrap();
-                    #[cfg(board = "esp32-wrover")]
+                    #[cfg(feature = "board_esp32_wrover")]
                     led.set_high().unwrap();
                     // Add NEG Edge
                     sender.send(MessageSND::NegEdge(slot_pos as u8)).unwrap();
