@@ -6,7 +6,7 @@ use log::{info, trace};
 use md5::{Digest, Md5};
 use rand::random;
 use std::io::{self, Cursor, Write};
-use std::net::{IpAddr, SocketAddr, UdpSocket};
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -218,11 +218,7 @@ impl WkSession {
         Arc::new(WkSession { socket, closed })
     }
 
-    pub fn connect(peer: SocketAddr) -> Result<Arc<WkSession>> {
-        let udp = match peer.ip() {
-            IpAddr::V4(..) => UdpSocket::bind("0.0.0.0:0")?,
-            IpAddr::V6(..) => UdpSocket::bind("[::]:0")?,
-        };
+    pub fn connect(peer: SocketAddr, udp: UdpSocket) -> Result<Arc<WkSession>> {
         let udp = Arc::new(udp);
         let client_udp = udp.clone();
         let session = WkSession::new(
@@ -327,8 +323,7 @@ impl Drop for WkListener {
 }
 
 impl WkListener {
-    pub fn bind(addr: SocketAddr) -> Result<Self> {
-        let udp = UdpSocket::bind(addr)?;
+    pub fn bind(udp: UdpSocket) -> Result<Self> {
         let udp = Arc::new(udp);
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));

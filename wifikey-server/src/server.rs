@@ -3,8 +3,9 @@ use crate::rigcontrol::RigControl;
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use log::{info, trace};
+use mqttstunclient::MQTTStunClient;
 use std::collections::HashMap;
-use std::net::ToSocketAddrs;
+use std::net::UdpSocket;
 use std::sync::atomic::Ordering;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize},
@@ -14,9 +15,9 @@ use std::thread::{self, JoinHandle};
 use wksocket::{challenge, WkListener, WkReceiver};
 
 pub struct WiFiKeyConfig {
+    server_name: String,
     server_password: String,
     sesami: u64,
-    accept_port: String,
     rigcontrol_port: String,
     keying_port: String,
     use_rts_for_keying: bool,
@@ -24,17 +25,17 @@ pub struct WiFiKeyConfig {
 
 impl WiFiKeyConfig {
     pub fn new(
+        server_name: String,
         server_password: String,
         sesami: u64,
-        accept_port: String,
         rigcontrol_port: String,
         keying_port: String,
         use_rts_for_keying: bool,
     ) -> Self {
         Self {
+            server_name,
             server_password,
             sesami,
-            accept_port,
             rigcontrol_port,
             keying_port,
             use_rts_for_keying,
@@ -173,25 +174,36 @@ impl WifiKeyServer {
             config.use_rts_for_keying,
         )?;
         let rigcontrol = Arc::new(rigcontrol);
-
-        let addr = config
-            .accept_port
-            .to_socket_addrs()
-            .unwrap()
-            .next()
-            .unwrap();
-
         let stat = remote_stats.clone();
         let config = config.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let quit_thread = stop.clone();
         let rig = rigcontrol.clone();
-        let mut listener = WkListener::bind(addr).unwrap();
 
         let handle = thread::spawn(move || loop {
             if quit_thread.load(Ordering::Relaxed) {
                 break;
             }
+            let udp = UdpSocket::bind("0.0.0.0:0").unwrap();
+
+            let mut server = MQTTStunClient::new(
+                config.server_name.clone(),
+                &config.server_password,
+                None,
+                None,
+            );
+            if let Some(client_addr) = server.get_client_addr(&udp) {
+                let addr = client_addr.to_string();
+                info!("Client address: {}", addr);
+            } else if let Ok(addr) = udp.local_addr() {
+                info!("Local address: {}", addr);
+                stat.set_peer(&addr.to_string());
+            } else {
+                panic!("Failed to get client address");
+            }
+
+            let mut listener = WkListener::bind(udp).unwrap();
+
             match listener.accept() {
                 Ok((session, addr)) => {
                     let local_time: DateTime<Local> = Local::now();

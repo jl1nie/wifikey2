@@ -7,11 +7,13 @@ use smart_leds::{SmartLedsWrite, RGB8};
 #[cfg(feature = "board_m5atom")]
 use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
-use std::net::ToSocketAddrs;
+use std::net::UdpSocket;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU32};
 
+use log::LevelFilter;
 use log::{error, info, trace};
+use mqttstunclient::MQTTStunClient;
 use wksocket::{response, sleep, tick_count, MessageSND, WkSender, WkSession, MAX_SLOTS};
 
 #[toml_cfg::toml_config]
@@ -20,8 +22,8 @@ pub struct Config {
     wifi_ssid: &'static str,
     #[default("PASSWD")]
     wifi_passwd: &'static str,
-    #[default("remote-addr:port")]
-    remote_server: &'static str,
+    #[default("servername")]
+    server_name: &'static str,
     #[default("password")]
     server_password: &'static str,
     #[default(0)]
@@ -29,7 +31,7 @@ pub struct Config {
 }
 
 const STABLE_PERIOD: i32 = 1;
-const SLEEP_PERIOD: usize = 18_000; // Doze after empty packets sent.
+const SLEEP_PERIOD: usize = 148_000; // Doze after empty packets sent.
 const PKT_INTERVAL: usize = 50; // Send keying packet every 50ms
 const KEEP_ALIVE: u32 = 3_000; // Send Keep Alive Packet every 3sec.
 
@@ -46,6 +48,7 @@ fn main() -> Result<()> {
     esp_idf_sys::link_patches();
 
     esp_idf_svc::log::EspLogger::initialize_default();
+    log::set_max_level(LevelFilter::Trace);
 
     let peripherals = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
@@ -65,9 +68,9 @@ fn main() -> Result<()> {
     #[cfg(feature = "board_esp32_wrover")]
     led.set_high().unwrap();
 
-    let _wifi = wifi(peripherals.modem, sysloop.clone());
+    let wifi = wifi(peripherals.modem, sysloop.clone());
 
-    if _wifi.is_err() {
+    if wifi.is_err() {
         #[cfg(feature = "board_m5atom")]
         led.write(empty_color.clone()).unwrap();
         FreeRtos::delay_ms(3000);
@@ -112,19 +115,22 @@ fn main() -> Result<()> {
     let mut edge_count: usize = 0;
     let mut last_stat: u32 = last_sent;
 
-    let remote_addr = CONFIG
-        .remote_server
-        .to_socket_addrs()
-        .unwrap()
-        .next()
-        .unwrap();
-
-    info!("Remote Server ={}", remote_addr);
     loop {
-        let session = WkSession::connect(remote_addr).unwrap();
-        let Ok(_magic) = response(session.clone(), CONFIG.server_password, CONFIG.sesami) else {
+        let mut server = MQTTStunClient::new(
+            CONFIG.server_name.to_string(),
+            CONFIG.server_password,
+            None,
+            None,
+        );
+        server.sanity_check();
+
+        let udp = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let remote_addr = server.get_server_addr(&udp).unwrap();
+        info!("Remote Server ={}", remote_addr);
+        let session = WkSession::connect(remote_addr, udp).unwrap();
+        if let Err(e) = response(session.clone(), CONFIG.server_password, CONFIG.sesami) {
             session.close().unwrap();
-            info!("Auth. failed.");
+            info!("Auth. failed.{:?}", e);
             sleep(5000);
             continue;
         };

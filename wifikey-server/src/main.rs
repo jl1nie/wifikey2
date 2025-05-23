@@ -3,10 +3,16 @@
 use wifikey_server::WiFiKeyApp;
 
 fn main() -> eframe::Result<()> {
+    /*
     if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "error");
+        std::env::set_var("RUST_LOG", "info");
     }
-    egui_logger::init().unwrap();
+    egui_logger::builder().init().unwrap();
+    */
+    egui_logger::builder()
+        .filter_level(LevelFilter::Info) // ここでデフォルトを Info に設定！
+        .init()
+        .unwrap();
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -17,6 +23,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "WiFiKey2",
         native_options,
-        Box::new(|cc| Box::new(WiFiKeyApp::new(cc))),
+        Box::new(|cc| Ok(Box::new(WiFiKeyApp::new(cc)))),
     )
 }

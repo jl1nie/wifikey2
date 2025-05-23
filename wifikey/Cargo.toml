@@ -24,11 +24,12 @@ anyhow = "1"
 bytes = "1.1"
 esp-idf-sys = { version = "0.36", features = ["binstart"] }
 esp-idf-svc = { version = "0.51", features = ["experimental"] }
-esp-idf-hal = "*"
+esp-idf-hal = "0.45.2"
 log = { version = "0.4", default-features = false }
 smart-leds = "0.4"
 ws2812-esp32-rmt-driver = { version = "0.12.0", features = ["smart-leds-trait"] }
 toml-cfg = "0.2"
 wksocket = { path = "../wksocket" }
+mqttstunclient = { path = "../mqttstunclient" }
 [build-dependencies]
 embuild = "0.33"

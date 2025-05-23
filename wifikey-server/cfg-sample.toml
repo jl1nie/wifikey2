@@ -1,6 +1,6 @@
-server_password = "passwd"
-accept_port = "0.0.0.0:8080"
+server_name = "your_callsign/keyer_name"
+server_password = "keyer_passwd"
 sesami = 0
-rigcontrol_port = "COM1"
-keying_port = "COM2"
+rigcontrol_port = "COM5"
+keying_port = "COM6"
 use_rts_for_keying = true

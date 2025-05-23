@@ -6,11 +6,12 @@ use std::{sync::Arc, time::Duration};
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct WiFiKeyApp {
-    accept_port: String,
+    server_name: String,
+    server_password: String,
     rigcontrol_port: String,
     keying_port: String,
     use_rts_for_keying: bool,
-    server_password: String,
+
     sesami: u64,
 
     #[serde(skip)]
@@ -26,17 +27,18 @@ impl Default for WiFiKeyApp {
             .build()
             .unwrap();
 
-        let accept_port = config.get_string("accept_port").unwrap();
+        let server_name = config.get_string("server_name").unwrap();
+        let server_password = config.get_string("server_password").unwrap();
         let rigcontrol_port = config.get_string("rigcontrol_port").unwrap();
         let keying_port = config.get_string("keying_port").unwrap();
         let use_rts_for_keying = config.get_bool("use_rts_for_keying").unwrap();
-        let server_password = config.get_string("server_password").unwrap();
+
         let sesami: u64 = config.get_string("sesami").unwrap().parse().unwrap();
 
         let wk_config = Arc::new(WiFiKeyConfig::new(
+            server_name.clone(),
             server_password.clone(),
             sesami,
-            accept_port.clone(),
             rigcontrol_port.clone(),
             keying_port.clone(),
             use_rts_for_keying,
@@ -47,11 +49,11 @@ impl Default for WiFiKeyApp {
         let server = Arc::new(WifiKeyServer::new(wk_config, remote_stats.clone()).unwrap());
 
         Self {
-            accept_port,
+            server_name,
+            server_password,
             rigcontrol_port,
             keying_port,
             use_rts_for_keying,
-            server_password,
             sesami,
             remote_stats,
             server,
@@ -128,8 +130,8 @@ impl eframe::App for WiFiKeyApp {
                 }
             });
         });
-        egui::Window::new("Log").show(ctx, |ui| {
-            egui_logger::logger_ui(ui);
+        egui::Window::new("Log").show(ctx, |_ui| {
+            egui_logger::logger_ui();
         });
     }
 }

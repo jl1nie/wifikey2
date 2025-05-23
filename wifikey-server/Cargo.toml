@@ -6,23 +6,27 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-egui = { version = "0.27.0", features = ["log"] }
+egui = { version = "0.31.0", features = ["log"] }
 anyhow = "1.0"
+chacha20poly1305 = { version = "0.10"}
 serialport = "4.3.0"
 kcp = "0.5"
 bytes = "1.1"
 log = { version = "0.4", default-features = false }
+rumqttc = "0.24"
+stunclient ="0.4"
 time = "0.3"
-config = "0.14.0"
+config = "0.15.0"
 chrono = "0.4"
-egui_logger = "0.4"
-wksocket = { path = "../wksocket" }
-eframe = { version = "0.27.0", default-features = false, features = [
+egui_logger = "0.7"
+eframe = { version = "0.31.0", default-features = false, features = [
     "accesskit",     # Make egui comptaible with screen readers. NOTE: adds a lot of dependencies.
     "default_fonts", # Embed the default egui fonts.
     "glow",          # Use the glow rendering backend. Alternative: "wgpu".
     "persistence",   # Enable restoring app state when restarting the app.
 ] }
 serde = { version = "1", features = ["derive"] }
+wksocket = { path = "../wksocket" }
+mqttstunclient = { path = "../mqttstunclient", features = ["ru-mqtt"] }
 [build-dependencies]
 winres = "0.1.12"

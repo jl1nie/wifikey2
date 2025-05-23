@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["wksocket", "wifikey", "wifikey-server"]
+members = ["mqttstunclient", "wksocket", "wifikey", "wifikey-server"]
 
 [profile.release]
 opt-level = "s"
