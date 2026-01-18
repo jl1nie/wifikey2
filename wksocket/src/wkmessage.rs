@@ -40,31 +40,37 @@ impl WkSender {
             if let Ok(cmd) = rx.try_recv() {
                 match cmd {
                     MessageSND::CloseSession => {
-                        session.close().unwrap();
+                        let _ = session.close();
                         closed.store(true, Ordering::Relaxed);
                         break;
                     }
                     MessageSND::StartATU => {
                         slots.clear();
-                        WkSender::encode(&mut buf, PacketKind::StartATU, 0, &slots);
+                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::StartATU, 0, &slots) {
+                            log::error!("encode error: {}", e);
+                            continue;
+                        }
                         if let Ok(n) = session.send(&buf) {
                             trace!("START ATU {} bytes pkt sent", n);
                         } else {
                             trace!("session closed by peer");
-                            session.close().unwrap();
+                            let _ = session.close();
                             closed.store(true, Ordering::Relaxed);
                             break;
                         }
                     }
                     MessageSND::SendPacket(tm) => {
-                        WkSender::encode(&mut buf, PacketKind::KeyerMessage, tm, &slots);
+                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::KeyerMessage, tm, &slots) {
+                            log::error!("encode error: {}", e);
+                            continue;
+                        }
                         if let Ok(n) = session.send(&buf) {
                             trace!("{} bytes pkt sent at {} edges={}", n, tm, slots.len());
                             buf.clear();
                             slots.clear();
                         } else {
                             trace!("session closed by peer");
-                            session.close().unwrap();
+                            let _ = session.close();
                             closed.store(true, Ordering::Relaxed);
                             break;
                         }
@@ -81,23 +87,23 @@ impl WkSender {
         Ok(WkSender { session_closed, tx })
     }
 
-    fn encode(buf: &mut BytesMut, cmd: PacketKind, tm: u32, slots: &[u8]) {
+    fn encode(buf: &mut BytesMut, cmd: PacketKind, tm: u32, slots: &[u8]) -> Result<()> {
         buf.clear();
         buf.put_u8(cmd as u8);
         buf.put_u32(tm);
         if slots.len() > MAX_SLOTS {
-            panic! {"Too many slots."}
+            bail!("Too many slots: {} > {}", slots.len(), MAX_SLOTS);
         }
         buf.put_u8(slots.len() as u8);
         for s in slots.iter() {
             buf.put_u8(*s);
         }
+        Ok(())
     }
 
     pub fn send(&mut self, msg: MessageSND) -> Result<()> {
         if !self.session_closed.load(Ordering::Relaxed) {
-            self.tx.send(msg).unwrap();
-            Ok(())
+            self.tx.send(msg).map_err(|e| anyhow::anyhow!("send error: {}", e))
         } else {
             bail!("session closed by peer")
         }
@@ -130,17 +136,20 @@ impl WkReceiver {
                 if let Ok(n) = session.recv(&mut buf) {
                     if n > 0 {
                         let slots = WkReceiver::decode(&buf);
-                        tx.send(slots).unwrap();
+                        if tx.send(slots).is_err() {
+                            trace!("receiver dropped, closing session");
+                            break;
+                        }
                     }
                 } else {
                     let slots = vec![MessageRCV::SessionClosed];
-                    tx.send(slots).unwrap();
+                    let _ = tx.send(slots);
                     closed.store(true, Ordering::Relaxed);
                 }
 
                 if closed.load(Ordering::Relaxed) {
                     trace!("session closed.");
-                    session.close().unwrap();
+                    let _ = session.close();
                     break;
                 }
                 sleep(1);

@@ -13,6 +13,7 @@ log = { version = "0.4", default-features = false }
 time = "0.3"
 rand = "0.9"
 md-5 = "0.10"
+subtle = "2.5"
 
 [target.'cfg(any(target_arch = "xtensa", target_arch = "riscv32"))'.dependencies]
 esp-idf-sys = { version = "0.36", features = ["binstart"] }

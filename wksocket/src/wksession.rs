@@ -35,8 +35,10 @@ impl Write for UDPOutput {
                 Ok(n)
             }
             Err(e) => {
-                trace!("send packet error:{}", e);
-                Ok(0)
+                // Log at warn level since UDP send errors may indicate network issues
+                log::warn!("UDP send error to {}: {}", self.peer, e);
+                // Return error to let KCP handle retransmission
+                Err(e)
             }
         }
     }
@@ -70,15 +72,15 @@ impl KcpSocket {
             KcpMode::Default => kcp.set_nodelay(false, 10, 0, false),
             KcpMode::Normal => kcp.set_nodelay(false, 10, 0, true),
             KcpMode::Fast => {
-                kcp.set_mtu(MTU_SIZE).unwrap();
+                kcp.set_mtu(MTU_SIZE)?;
                 kcp.set_nodelay(true, 10, 1, true);
                 kcp.set_maximum_resend_times(10);
             }
             KcpMode::FastNB => {
-                kcp.set_mtu(MTU_SIZE).unwrap();
+                kcp.set_mtu(MTU_SIZE)?;
                 kcp.set_nodelay(true, 10, 1, true);
                 kcp.set_maximum_resend_times(10);
-                socket.set_nonblocking(true).unwrap();
+                socket.set_nonblocking(true)?;
             }
         }
 
@@ -188,15 +190,18 @@ impl WkSession {
         peer: SocketAddr,
         mode: KcpMode,
         expire: Duration,
-    ) -> Arc<WkSession> {
-        let kcp = KcpSocket::new(mode, udp.clone(), peer).unwrap();
+    ) -> Result<Arc<WkSession>> {
+        let kcp = KcpSocket::new(mode, udp.clone(), peer)?;
         let socket = Arc::new(Mutex::new(kcp));
         let server = socket.clone();
         let expire = expire.as_millis() as u32;
         let closed = AtomicBool::new(false);
 
         thread::spawn(move || loop {
-            let mut s = server.lock().unwrap();
+            let Ok(mut s) = server.lock() else {
+                info!("mutex poisoned, exiting update thread");
+                break;
+            };
             if s.closed() {
                 break;
             }
@@ -215,7 +220,7 @@ impl WkSession {
                 }
             }
         });
-        Arc::new(WkSession { socket, closed })
+        Ok(Arc::new(WkSession { socket, closed }))
     }
 
     pub fn connect(peer: SocketAddr, udp: UdpSocket) -> Result<Arc<WkSession>> {
@@ -226,7 +231,7 @@ impl WkSession {
             peer,
             KcpMode::FastNB,
             Duration::from_secs(SESSION_TIMEOUT),
-        );
+        )?;
         let client_socket = session.socket.clone();
         let client_session = session.clone();
 
@@ -250,7 +255,10 @@ impl WkSession {
                         );
                         continue;
                     }
-                    let mut s = client_socket.lock().unwrap();
+                    let Ok(mut s) = client_socket.lock() else {
+                        info!("mutex poisoned, exiting client thread");
+                        break;
+                    };
                     if s.waiting_conv() {
                         let conv = kcp::get_conv(pkt);
                         kcp::set_conv(pkt, conv);
@@ -268,24 +276,24 @@ impl WkSession {
     }
 
     pub fn input(&self, buf: &[u8]) -> Result<()> {
-        let mut socket = self.socket.lock().unwrap();
+        let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.input(buf)
     }
 
     pub fn send(&self, buf: &[u8]) -> Result<usize> {
-        let mut socket = self.socket.lock().unwrap();
+        let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.send(buf)
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
-        let mut socket = self.socket.lock().unwrap();
+        let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.recv(buf)
     }
 
     pub fn recv_timeout(&self, buf: &mut [u8], timeout: u32) -> Result<usize> {
         let now = tick_count();
         while tick_count() - now < timeout {
-            let mut socket = self.socket.lock().unwrap();
+            let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
             if let Ok(n) = socket.recv(buf) {
                 if n > 0 {
                     return Ok(n);
@@ -299,7 +307,7 @@ impl WkSession {
     }
 
     pub fn close(&self) -> Result<()> {
-        let mut socket = self.socket.lock().unwrap();
+        let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.close();
         self.closed.store(true, Ordering::Relaxed);
         Ok(())
@@ -367,7 +375,7 @@ impl WkListener {
                                             continue;
                                         }
                                         info!("conv. id inconsistent. close session");
-                                        session.close().unwrap();
+                                        let _ = session.close();
                                     } else {
                                         trace!("discard packet");
                                         continue;
@@ -376,16 +384,28 @@ impl WkListener {
                                 trace!("session closed.");
                             }
                             trace!("accept new session from peer = {} input {} bytes", peer, n);
-                            let session = WkSession::new(
+                            let session = match WkSession::new(
                                 udp.clone(),
                                 peer,
                                 KcpMode::Fast,
                                 Duration::from_secs(SESSION_TIMEOUT),
-                            );
-                            session.input(pkt).unwrap();
+                            ) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    info!("failed to create session: {}", e);
+                                    continue;
+                                }
+                            };
+                            if let Err(e) = session.input(pkt) {
+                                info!("failed to input packet: {}", e);
+                                continue;
+                            }
 
                             let client_session = session.clone();
-                            tx.send((client_session, peer)).unwrap();
+                            if tx.send((client_session, peer)).is_err() {
+                                info!("listener channel closed");
+                                break;
+                            }
                             sessions = Some((session, peer));
                         }
                     }
@@ -469,7 +489,9 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u
     let response = &buf[..16];
     let mut challenge = [0u8; 16];
     hashstr(&mut challenge, &format!("{}{}", passwd, chl));
-    let ok = response.iter().eq(challenge.iter());
+    // Use constant-time comparison to prevent timing attacks
+    use subtle::ConstantTimeEq;
+    let ok = response.ct_eq(&challenge).into();
     let res = if ok { random::<u32>() + 1u32 } else { 0u32 };
     sendbuf.clear();
     sendbuf.put_u32(res);
