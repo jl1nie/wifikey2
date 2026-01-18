@@ -1,0 +1,49 @@
+#!/bin/bash
+# Pre-commit hook: Run clippy and format check for all crates
+
+set -e
+
+# ===== PC crates (wifikey-server, wksocket, mqttstunclient) =====
+echo "=== PC crates ==="
+
+echo "Running cargo fmt check..."
+cargo fmt --check -p wifikey-server -p wksocket -p mqttstunclient
+if [ $? -ne 0 ]; then
+    echo "Format check failed. Run 'cargo fmt' to fix."
+    exit 1
+fi
+
+echo "Running cargo clippy for PC crates..."
+cargo clippy -p wifikey-server -p wksocket -p mqttstunclient -- -D warnings
+if [ $? -ne 0 ]; then
+    echo "Clippy check failed. Fix warnings before committing."
+    exit 1
+fi
+
+# ===== ESP32 crate (wifikey) =====
+echo ""
+echo "=== ESP32 crate (wifikey) ==="
+
+# Check if ESP environment is available
+if [ -f ~/export-esp.sh ]; then
+    source ~/export-esp.sh 2>/dev/null
+
+    echo "Running cargo fmt check for wifikey..."
+    (cd wifikey && cargo fmt --check)
+    if [ $? -ne 0 ]; then
+        echo "Format check failed for wifikey. Run 'cd wifikey && cargo fmt' to fix."
+        exit 1
+    fi
+
+    echo "Running cargo clippy for wifikey (ESP32)..."
+    (cd wifikey && cargo clippy -- -D warnings)
+    if [ $? -ne 0 ]; then
+        echo "Clippy check failed for wifikey. Fix warnings before committing."
+        exit 1
+    fi
+else
+    echo "Warning: ~/export-esp.sh not found, skipping wifikey checks"
+fi
+
+echo ""
+echo "Pre-commit checks passed!"

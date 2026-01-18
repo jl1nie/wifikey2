@@ -186,6 +186,18 @@ cargo build -p wifikey --release
 espflash flash \\wsl$\Ubuntu\home\user\src\wifikey2\target\xtensa-esp32-espidf\release\wifikey
 ```
 
+### Git Hooks セットアップ
+
+リポジトリをクローン後、以下を実行してpre-commitフックを有効化:
+
+```bash
+./scripts/setup-hooks.sh
+```
+
+Pre-commitフックは以下をチェックします:
+- `cargo fmt --check` (全クレート)
+- `cargo clippy` (PC/ESP32クレート)
+
 ## ライセンス
 
 [LICENSE](LICENSE) を参照
