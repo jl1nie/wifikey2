@@ -435,7 +435,7 @@ impl WkListener {
     }
 }
 
-fn hashstr(buf: &mut [u8], passwd: &str) {
+pub(crate) fn hashstr(buf: &mut [u8], passwd: &str) {
     let mut hasher = Md5::new();
     hasher.update(passwd);
     let result = hasher.finalize();
@@ -506,5 +506,46 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str) -> Result<u32> {
     } else {
         info!("auth challenge failed {response:?} {challenge:?}");
         bail!("auth challenge failed")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hashstr_basic() {
+        let mut buf = [0u8; 16];
+        hashstr(&mut buf, "test");
+        // MD5("test") = 098f6bcd4621d373cade4e832627b4f6
+        assert_eq!(
+            buf,
+            [
+                0x09, 0x8f, 0x6b, 0xcd, 0x46, 0x21, 0xd3, 0x73, 0xca, 0xde, 0x4e, 0x83, 0x26, 0x27,
+                0xb4, 0xf6
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hashstr_empty() {
+        let mut buf = [0u8; 16];
+        hashstr(&mut buf, "");
+        // MD5("") = d41d8cd98f00b204e9800998ecf8427e
+        assert_eq!(
+            buf,
+            [
+                0xd4, 0x1d, 0x8c, 0xd9, 0x8f, 0x00, 0xb2, 0x04, 0xe9, 0x80, 0x09, 0x98, 0xec, 0xf8,
+                0x42, 0x7e
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hashstr_with_salt() {
+        let mut buf = [0u8; 16];
+        hashstr(&mut buf, "password12345");
+        // Verify it produces a valid 16-byte hash
+        assert_ne!(buf, [0u8; 16]);
     }
 }

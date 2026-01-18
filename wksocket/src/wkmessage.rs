@@ -90,7 +90,7 @@ impl WkSender {
         Ok(WkSender { session_closed, tx })
     }
 
-    fn encode(buf: &mut BytesMut, cmd: PacketKind, tm: u32, slots: &[u8]) -> Result<()> {
+    pub(crate) fn encode(buf: &mut BytesMut, cmd: PacketKind, tm: u32, slots: &[u8]) -> Result<()> {
         buf.clear();
         buf.put_u8(cmd as u8);
         buf.put_u32(tm);
@@ -115,7 +115,7 @@ impl WkSender {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum MessageRCV {
     Sync(u32),
     Keydown(u32),
@@ -196,7 +196,7 @@ impl WkReceiver {
         self.session_closed.load(Ordering::Relaxed)
     }
 
-    fn decode(buf: &[u8]) -> Vec<MessageRCV> {
+    pub(crate) fn decode(buf: &[u8]) -> Vec<MessageRCV> {
         let mut buf = Cursor::new(buf);
         let cmd = buf.get_u8();
         let tm = buf.get_u32();
@@ -222,5 +222,103 @@ impl WkReceiver {
             }
         }
         slots
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encode_sync_packet() {
+        let mut buf = BytesMut::with_capacity(128);
+        let slots: &[u8] = &[];
+        WkSender::encode(&mut buf, PacketKind::KeyerMessage, 1000, slots).unwrap();
+
+        // Verify: cmd(1) + tm(4) + len(1) = 6 bytes
+        assert_eq!(buf.len(), 6);
+        assert_eq!(buf[0], PacketKind::KeyerMessage as u8);
+        // timestamp is big-endian
+        assert_eq!(&buf[1..5], &1000u32.to_be_bytes());
+        assert_eq!(buf[5], 0); // no slots
+    }
+
+    #[test]
+    fn test_encode_with_edges() {
+        let mut buf = BytesMut::with_capacity(128);
+        let slots: &[u8] = &[0x10, 0x90]; // keydown at +16, keyup at +16
+        WkSender::encode(&mut buf, PacketKind::KeyerMessage, 1000, slots).unwrap();
+
+        assert_eq!(buf.len(), 8); // 6 + 2 slots
+        assert_eq!(buf[5], 2); // 2 slots
+        assert_eq!(buf[6], 0x10); // keydown (high bit = 0)
+        assert_eq!(buf[7], 0x90); // keyup (high bit = 1)
+    }
+
+    #[test]
+    fn test_encode_start_atu() {
+        let mut buf = BytesMut::with_capacity(128);
+        let slots: &[u8] = &[];
+        WkSender::encode(&mut buf, PacketKind::StartATU, 0, slots).unwrap();
+
+        assert_eq!(buf[0], PacketKind::StartATU as u8);
+    }
+
+    #[test]
+    fn test_encode_too_many_slots() {
+        let mut buf = BytesMut::with_capacity(256);
+        let slots = vec![0u8; MAX_SLOTS + 1];
+        let result = WkSender::encode(&mut buf, PacketKind::KeyerMessage, 0, &slots);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_sync_packet() {
+        let mut buf = BytesMut::with_capacity(128);
+        WkSender::encode(&mut buf, PacketKind::KeyerMessage, 1000, &[]).unwrap();
+
+        let msgs = WkReceiver::decode(&buf);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], MessageRCV::Sync(1000));
+    }
+
+    #[test]
+    fn test_decode_keydown_keyup() {
+        let mut buf = BytesMut::with_capacity(128);
+        // keydown at offset 10, keyup at offset 20
+        let slots: &[u8] = &[10, 0x80 | 20];
+        WkSender::encode(&mut buf, PacketKind::KeyerMessage, 1000, slots).unwrap();
+
+        let msgs = WkReceiver::decode(&buf);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0], MessageRCV::Keydown(1010)); // 1000 + 10
+        assert_eq!(msgs[1], MessageRCV::Keyup(1020)); // 1000 + 20
+    }
+
+    #[test]
+    fn test_decode_start_atu() {
+        let mut buf = BytesMut::with_capacity(128);
+        WkSender::encode(&mut buf, PacketKind::StartATU, 0, &[]).unwrap();
+
+        let msgs = WkReceiver::decode(&buf);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], MessageRCV::StartATU);
+    }
+
+    #[test]
+    fn test_encode_decode_roundtrip() {
+        let mut buf = BytesMut::with_capacity(128);
+        let original_tm = 5000u32;
+        let slots: &[u8] = &[5, 0x80 | 10, 15, 0x80 | 25];
+
+        WkSender::encode(&mut buf, PacketKind::KeyerMessage, original_tm, slots).unwrap();
+        let msgs = WkReceiver::decode(&buf);
+
+        assert_eq!(msgs.len(), 4);
+        assert_eq!(msgs[0], MessageRCV::Keydown(5005));
+        assert_eq!(msgs[1], MessageRCV::Keyup(5010));
+        assert_eq!(msgs[2], MessageRCV::Keydown(5015));
+        assert_eq!(msgs[3], MessageRCV::Keyup(5025));
     }
 }
