@@ -246,6 +246,185 @@ listen('log', (event) => {
 
 ---
 
+## 実装方針
+
+### 機能要件
+**egui版と同等の最低限機能を実装する**
+
+| 機能 | egui版 | Tauri版 |
+|------|--------|---------|
+| メニューバー (Quit) | ✓ | ✓ |
+| セッション情報表示 | ✓ | ✓ |
+| 統計表示 (WPM, pkt/s) | ✓ | ✓ |
+| ATU起動ボタン | ✓ | ✓ |
+| ログウィンドウ | ✓ | ✓ |
+| **設定画面 (GUI)** | ✗ (TOML直接編集) | ✓ **新規** |
+| **設定保存** | ✗ | ✓ **新規** |
+
+### GUIによる設定機能 (新規追加)
+
+#### 設定項目
+```rust
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct AppConfig {
+    pub server_name: String,
+    pub server_password: String,
+    pub sesami: u64,
+    pub rigcontrol_port: String,
+    pub keying_port: String,
+    pub use_rts_for_keying: bool,
+}
+```
+
+#### Tauriコマンド (config.rs)
+```rust
+use std::fs;
+use std::path::PathBuf;
+use tauri::{AppHandle, Manager, State};
+
+#[tauri::command]
+pub fn get_config(config: State<Arc<Mutex<AppConfig>>>) -> AppConfig {
+    config.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn save_config(
+    app: AppHandle,
+    config: State<Arc<Mutex<AppConfig>>>,
+    new_config: AppConfig,
+) -> Result<(), String> {
+    // 設定を更新
+    let mut cfg = config.lock().map_err(|e| e.to_string())?;
+    *cfg = new_config.clone();
+    
+    // TOMLファイルに保存
+    let config_path = get_config_path(&app)?;
+    let toml_str = toml::to_string_pretty(&new_config)
+        .map_err(|e| e.to_string())?;
+    fs::write(&config_path, toml_str)
+        .map_err(|e| e.to_string())?;
+    
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_serial_ports() -> Vec<String> {
+    serialport::available_ports()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.port_name)
+        .collect()
+}
+
+fn get_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let config_dir = app.path().app_config_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(config_dir.join("cfg.toml"))
+}
+```
+
+#### フロントエンド設定画面 (settings.html)
+```html
+<div id="settings-modal" class="modal hidden">
+  <div class="modal-content">
+    <h2>設定</h2>
+    <form id="settings-form">
+      <div class="form-group">
+        <label for="server-name">サーバー名</label>
+        <input type="text" id="server-name" required>
+      </div>
+      <div class="form-group">
+        <label for="server-password">パスワード</label>
+        <input type="password" id="server-password" required>
+      </div>
+      <div class="form-group">
+        <label for="sesami">Sesami</label>
+        <input type="number" id="sesami" min="0" required>
+      </div>
+      <div class="form-group">
+        <label for="rigcontrol-port">リグ制御ポート</label>
+        <select id="rigcontrol-port"></select>
+      </div>
+      <div class="form-group">
+        <label for="keying-port">キーイングポート</label>
+        <select id="keying-port"></select>
+      </div>
+      <div class="form-group">
+        <label>
+          <input type="checkbox" id="use-rts">
+          RTSでキーイング
+        </label>
+      </div>
+      <div class="button-group">
+        <button type="button" id="cancel-btn">キャンセル</button>
+        <button type="submit">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+```
+
+#### 設定画面JavaScript (settings.js)
+```javascript
+const { invoke } = window.__TAURI__.core;
+
+async function openSettings() {
+  // シリアルポート一覧を取得
+  const ports = await invoke('list_serial_ports');
+  populatePortSelects(ports);
+  
+  // 現在の設定を読み込み
+  const config = await invoke('get_config');
+  document.getElementById('server-name').value = config.server_name;
+  document.getElementById('server-password').value = config.server_password;
+  document.getElementById('sesami').value = config.sesami;
+  document.getElementById('rigcontrol-port').value = config.rigcontrol_port;
+  document.getElementById('keying-port').value = config.keying_port;
+  document.getElementById('use-rts').checked = config.use_rts_for_keying;
+  
+  document.getElementById('settings-modal').classList.remove('hidden');
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  
+  const newConfig = {
+    server_name: document.getElementById('server-name').value,
+    server_password: document.getElementById('server-password').value,
+    sesami: parseInt(document.getElementById('sesami').value),
+    rigcontrol_port: document.getElementById('rigcontrol-port').value,
+    keying_port: document.getElementById('keying-port').value,
+    use_rts_for_keying: document.getElementById('use-rts').checked,
+  };
+  
+  try {
+    await invoke('save_config', { newConfig });
+    alert('設定を保存しました。再起動後に反映されます。');
+    closeSettings();
+  } catch (e) {
+    alert('保存に失敗しました: ' + e);
+  }
+}
+
+function populatePortSelects(ports) {
+  const selects = ['rigcontrol-port', 'keying-port'];
+  selects.forEach(id => {
+    const select = document.getElementById(id);
+    select.innerHTML = ports.map(p => `<option value="${p}">${p}</option>`).join('');
+  });
+}
+
+document.getElementById('settings-form').addEventListener('submit', saveSettings);
+document.getElementById('cancel-btn').addEventListener('click', closeSettings);
+```
+
+#### 追加依存関係 (Cargo.toml)
+```toml
+toml = "0.8"  # TOML シリアライズ/デシリアライズ
+```
+
+---
+
 ## 実装ステップ
 
 ### Step 1: 基盤準備 (1日)
@@ -261,16 +440,23 @@ listen('log', (event) => {
 - [ ] 状態管理の適応
 
 ### Step 3: フロントエンド実装 (1-2日)
-- [ ] HTML/CSS作成
+- [ ] HTML/CSS作成 (メイン画面)
 - [ ] JavaScript実装
 - [ ] Tauriコマンド呼び出し
 
-### Step 4: 機能テスト (1日)
+### Step 4: 設定画面実装 (1日)
+- [ ] 設定モーダルUI作成
+- [ ] シリアルポート一覧取得
+- [ ] 設定読み込み/保存コマンド
+- [ ] TOML保存機能
+
+### Step 5: 機能テスト (1日)
 - [ ] セッション接続テスト
 - [ ] ATU起動テスト
 - [ ] ログ表示テスト
+- [ ] 設定保存/読み込みテスト
 
-### Step 5: ビルド・配布 (1日)
+### Step 6: ビルド・配布 (1日)
 - [ ] Windows向けビルド
 - [ ] Linux向けビルド
 - [ ] インストーラー作成
