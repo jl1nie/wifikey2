@@ -153,3 +153,27 @@ dependencies = ["pc-fmt-check", "esp-fmt-check"]
 [tasks.check]
 description = "Run format check and clippy on all crates"
 dependencies = ["fmt-check", "clippy"]
+
+# ============================================================
+# Test Tasks
+# ============================================================
+
+[tasks.test]
+description = "Run tests for PC crates (wksocket, mqttstunclient)"
+command = "cargo"
+args = ["test", "-p", "wksocket", "-p", "mqttstunclient"]
+
+[tasks.test-verbose]
+description = "Run tests with output (nocapture)"
+command = "cargo"
+args = ["test", "-p", "wksocket", "-p", "mqttstunclient", "--", "--nocapture"]
+
+[tasks.test-wksocket]
+description = "Run wksocket tests only"
+command = "cargo"
+args = ["test", "-p", "wksocket"]
+
+[tasks.test-mqttstunclient]
+description = "Run mqttstunclient tests only"
+command = "cargo"
+args = ["test", "-p", "mqttstunclient"]
