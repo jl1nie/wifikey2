@@ -26,8 +26,6 @@ pub struct Config {
     server_name: &'static str,
     #[default("password")]
     server_password: &'static str,
-    #[default(0)]
-    sesami: u64,
 }
 
 const STABLE_PERIOD: i32 = 1;
@@ -140,7 +138,7 @@ fn main() -> Result<()> {
             sleep(5000);
             continue;
         };
-        if let Err(e) = response(session.clone(), CONFIG.server_password, CONFIG.sesami) {
+        if let Err(e) = response(session.clone(), CONFIG.server_password) {
             let _ = session.close();
             info!("Auth. failed.{:?}", e);
             sleep(5000);

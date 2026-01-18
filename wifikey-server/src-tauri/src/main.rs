@@ -100,7 +100,6 @@ async fn restart_server_internal(
     let wk_config = Arc::new(WiFiKeyConfig::new(
         config.server_name.clone(),
         config.server_password.clone(),
-        config.sesami,
         config.rigcontrol_port.clone(),
         config.keying_port.clone(),
         config.use_rts_for_keying,
@@ -123,7 +122,6 @@ fn init_server(
     let wk_config = Arc::new(WiFiKeyConfig::new(
         config.server_name.clone(),
         config.server_password.clone(),
-        config.sesami,
         config.rigcontrol_port.clone(),
         config.keying_port.clone(),
         config.use_rts_for_keying,

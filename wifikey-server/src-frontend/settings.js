@@ -13,7 +13,6 @@ const settingsForm = document.getElementById('settings-form');
 // Form inputs
 const serverNameInput = document.getElementById('server-name');
 const serverPasswordInput = document.getElementById('server-password');
-const sesamiInput = document.getElementById('sesami');
 const rigcontrolPortSelect = document.getElementById('rigcontrol-port');
 const keyingPortSelect = document.getElementById('keying-port');
 const useRtsCheckbox = document.getElementById('use-rts');
@@ -79,7 +78,6 @@ function populateForm(config, ports) {
     // Set text inputs
     serverNameInput.value = config.server_name || '';
     serverPasswordInput.value = config.server_password || '';
-    sesamiInput.value = config.sesami || 0;
     useRtsCheckbox.checked = config.use_rts_for_keying || false;
     
     // Populate port selects
@@ -126,7 +124,6 @@ async function saveSettings() {
         const newConfig = {
             server_name: serverNameInput.value.trim(),
             server_password: serverPasswordInput.value,
-            sesami: parseInt(sesamiInput.value, 10) || 0,
             rigcontrol_port: rigcontrolPortSelect.value,
             keying_port: keyingPortSelect.value,
             use_rts_for_keying: useRtsCheckbox.checked,

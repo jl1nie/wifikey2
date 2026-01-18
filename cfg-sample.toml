@@ -1,6 +1,5 @@
 [wifikey]
 wifi_ssid = "SSID"
 wifi_passwd = "PASSWD"
-remote_server = "remoteIP:port"
+server_name = "your_callsign/keyer_name"
 server_password = "PASSWD"
-sesami = 0

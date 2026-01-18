@@ -7,7 +7,6 @@ use std::path::PathBuf;
 pub struct AppConfig {
     pub server_name: String,
     pub server_password: String,
-    pub sesami: u64,
     pub rigcontrol_port: String,
     pub keying_port: String,
     pub use_rts_for_keying: bool,
@@ -18,7 +17,6 @@ impl Default for AppConfig {
         Self {
             server_name: "your_callsign/keyer_name".to_string(),
             server_password: "keyer_passwd".to_string(),
-            sesami: 0,
             rigcontrol_port: "COM5".to_string(),
             keying_port: "COM6".to_string(),
             use_rts_for_keying: true,

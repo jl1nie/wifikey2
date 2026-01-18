@@ -434,12 +434,11 @@ fn hashstr(buf: &mut [u8], passwd: &str) {
     buf.copy_from_slice(&result);
 }
 
-pub fn response(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u32> {
-    let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
+pub fn response(session: Arc<WkSession>, passwd: &str) -> Result<u32> {
     let mut buf = [0u8; PKT_SIZE];
 
-    sendbuf.put_u64(sesami);
-    session.send(&sendbuf)?;
+    // Request challenge from server
+    session.send(&[0u8; 1])?;
 
     if session.recv_timeout(&mut buf, 1000).is_err() {
         bail!("auth response time out");
@@ -462,19 +461,14 @@ pub fn response(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u3
     }
 }
 
-pub fn challenge(session: Arc<WkSession>, passwd: &str, sesami: u64) -> Result<u32> {
+pub fn challenge(session: Arc<WkSession>, passwd: &str) -> Result<u32> {
     let mut sendbuf = BytesMut::with_capacity(PKT_SIZE);
     let mut buf = [0u8; PKT_SIZE];
 
+    // Wait for client to initiate authentication
     if session.recv_timeout(&mut buf, 1000).is_err() {
-        info!("auth challenge timeout1");
-        bail!("auth challenge timeout1");
-    }
-
-    let mut rcvbuf = Cursor::new(buf);
-    if sesami != rcvbuf.get_u64() {
-        info!("auth challenge timeout2");
-        bail!("auth challenge timeout2");
+        info!("auth challenge timeout: no init request");
+        bail!("auth challenge timeout: no init request");
     }
 
     let chl = random();

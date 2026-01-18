@@ -1,6 +1,5 @@
 server_name = "your_callsign/keyer_name"
 server_password = "keyer_passwd"
-sesami = 0
 rigcontrol_port = "COM5"
 keying_port = "COM6"
 use_rts_for_keying = true

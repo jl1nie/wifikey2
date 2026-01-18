@@ -98,7 +98,6 @@ espflash flash target/xtensa-esp32-espidf/release/wifikey --monitor
 ```toml
 server_name = "your-server-name"
 server_password = "your-password"
-sesami = 0
 rigcontrol_port = "COM3"      # Windows例 (Linux: /dev/ttyUSB0)
 keying_port = "COM4"
 use_rts_for_keying = true
@@ -116,7 +115,6 @@ wifi_ssid = "YOUR_SSID"
 wifi_passwd = "YOUR_PASSWORD"
 server_name = "your-server-name"
 server_password = "your-password"
-sesami = 0
 ```
 
 ## 機能

@@ -17,7 +17,6 @@ use wksocket::{challenge, WkListener, WkReceiver};
 pub struct WiFiKeyConfig {
     server_name: String,
     server_password: String,
-    sesami: u64,
     rigcontrol_port: String,
     keying_port: String,
     use_rts_for_keying: bool,
@@ -27,7 +26,6 @@ impl WiFiKeyConfig {
     pub fn new(
         server_name: String,
         server_password: String,
-        sesami: u64,
         rigcontrol_port: String,
         keying_port: String,
         use_rts_for_keying: bool,
@@ -35,7 +33,6 @@ impl WiFiKeyConfig {
         Self {
             server_name,
             server_password,
-            sesami,
             rigcontrol_port,
             keying_port,
             use_rts_for_keying,
@@ -210,14 +207,12 @@ impl WifiKeyServer {
                     info!("{}: Accept new session from {}", local_time, addr);
                     stat.set_peer(&addr.to_string());
                     stat.set_session_start(&local_time.format("%F %T").to_string());
-                    let Ok(_magic) =
-                        challenge(session.clone(), &config.server_password, config.sesami)
-                    else {
+                    let Ok(_magic) = challenge(session.clone(), &config.server_password) else {
                         info!("Auth. failure.");
                         stat.set_auth_ok(false);
                         stat.clear_peer();
                         stat.clear_session_start();
-                        session.close().unwrap();
+                        let _ = session.close();
                         continue;
                     };
                     info!("Auth. Success.");
