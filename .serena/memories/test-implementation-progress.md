@@ -74,15 +74,81 @@ cargo test -p wksocket -- --nocapture
 
 ## 残りの作業 (Phase 2以降)
 
-1. **Makefile.toml テストタスク追加**
-   - test, test-verbose タスク
+### 優先度: 高
 
-2. **wifikey-server テスト** (オプション)
-   - AppConfig のテスト
-   - Tauriコマンドのテスト
+#### 1. wksocket セッション統合テスト
+- **問題**: KCPハンドシェイクがタイムアウトする
+- **原因候補**:
+  - KCPの初期化に時間がかかる
+  - listener.accept() のタイムアウト設定が短すぎる
+  - スレッド間の同期問題
+- **対策案**:
+  1. KCPのタイムアウト/インターバル設定を調整
+  2. テスト用にモックソケットを実装
+  3. tokio/async版のテストを検討
+- **テスト項目**:
+  - WkSession::connect() + WkListener::accept()
+  - challenge()/response() 認証フロー
+  - WkSender/WkReceiver メッセージ送受信
 
-3. **CI/CD 統合** (オプション)
-   - GitHub Actions でテスト自動化
+#### 2. mqttstunclient STUNプロトコルテスト
+- **テスト項目**:
+  - generate_stun_binding_request() リクエスト生成
+  - parse_stun_binding_response() レスポンス解析
+  - トランザクションID一致確認
+- **課題**: 実際のSTUNサーバーは不要（パケット構造のみテスト）
 
-4. **セッション統合テスト** (要調査)
-   - KCPタイムアウト問題の解決
+### 優先度: 中
+
+#### 3. wifikey-server テスト
+- **AppConfig テスト**:
+  - デフォルト値の確認
+  - 設定ファイルの読み書き
+  - バリデーション
+- **Tauriコマンド テスト**:
+  - get_config / set_config
+  - シリアルポート一覧取得（モック化必要）
+
+### 優先度: 低
+
+#### 4. CI/CD 統合
+- **GitHub Actions ワークフロー**:
+  ```yaml
+  name: Test
+  on: [push, pull_request]
+  jobs:
+    test:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+        - uses: dtolnay/rust-toolchain@stable
+        - run: cargo make test
+  ```
+- **注意**: ESP32テストはスキップ（クロスコンパイル環境が必要）
+
+#### 5. ESP32 実機テスト
+- **手動テストチェックリスト**:
+  - [ ] ファームウェアビルド成功
+  - [ ] フラッシュ書き込み成功
+  - [ ] LED点灯確認
+  - [ ] WiFi接続確認
+  - [ ] MQTT接続確認
+  - [ ] STUN NAT traversal確認
+  - [ ] PC側との通信確認
+- **自動化検討**: QEMUエミュレーション（限定的）
+
+## 現在のテストカバレッジ
+
+| クレート | テスト数 | カバー範囲 | 目標 |
+|----------|----------|------------|------|
+| wksocket | 11 | hashstr, encode/decode | セッション追加で60% |
+| mqttstunclient | 19 | AddressCandidates, 暗号化 | STUN追加で50% |
+| wifikey-server | 0 | - | 40% |
+| wifikey (ESP32) | 0 | ビルド確認のみ | - |
+
+## 次のアクション
+
+1. **即時**: dev-unit-tests ブランチを main にマージ
+2. **短期**: セッション統合テストのKCP問題調査
+3. **中期**: wifikey-server テスト追加
+4. **長期**: CI/CD 設定
