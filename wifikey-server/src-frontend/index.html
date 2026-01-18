@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WiFiKey2</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1 id="app-title" class="title">WiFiKey2</h1>
+            <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
+        </header>
+
+        <!-- Session Info -->
+        <section class="section">
+            <div class="info-row">
+                <span class="label">Session start:</span>
+                <span id="session-start" class="value">-</span>
+            </div>
+            <div class="info-row">
+                <span class="label">From:</span>
+                <span id="peer-address" class="value">-</span>
+            </div>
+        </section>
+
+        <hr class="divider">
+
+        <!-- Statistics -->
+        <section class="section stats">
+            <div class="stat-item">
+                <span id="wpm-value" class="stat-value">0</span>
+                <span class="stat-unit">wpm</span>
+            </div>
+            <div class="stat-item">
+                <span id="pkt-value" class="stat-value">0</span>
+                <span class="stat-unit">pkt/s</span>
+            </div>
+        </section>
+
+        <hr class="divider">
+
+        <!-- Controls -->
+        <section class="section controls">
+            <button id="atu-btn" class="btn btn-primary">Start ATU</button>
+        </section>
+
+        <!-- Log Window (collapsible) -->
+        <section class="section log-section">
+            <div class="log-header" id="log-toggle">
+                <span>Log</span>
+                <span id="log-arrow" class="arrow">▼</span>
+            </div>
+            <div id="log-container" class="log-container">
+                <div id="log-content" class="log-content"></div>
+            </div>
+        </section>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <button id="settings-close" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="settings-form">
+                    <div class="form-group">
+                        <label for="server-name">Server Name:</label>
+                        <input type="text" id="server-name" name="server_name" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="server-password">Password:</label>
+                        <input type="password" id="server-password" name="server_password" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="sesami">Sesami:</label>
+                        <input type="number" id="sesami" name="sesami" min="0" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="rigcontrol-port">Rigcontrol Port:</label>
+                        <select id="rigcontrol-port" name="rigcontrol_port">
+                            <option value="">Select port...</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="keying-port">Keying Port:</label>
+                        <select id="keying-port" name="keying_port">
+                            <option value="">Select port...</option>
+                        </select>
+                    </div>
+                    <div class="form-group checkbox-group">
+                        <input type="checkbox" id="use-rts" name="use_rts_for_keying">
+                        <label for="use-rts">Use RTS for Keying</label>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button id="settings-cancel" class="btn btn-secondary">Cancel</button>
+                <button id="settings-save" class="btn btn-primary">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="main.js"></script>
+    <script src="settings.js"></script>
+</body>
+</html>
