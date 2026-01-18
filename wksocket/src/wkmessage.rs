@@ -48,11 +48,11 @@ impl WkSender {
                         slots.clear();
                         if let Err(e) = WkSender::encode(&mut buf, PacketKind::StartATU, 0, &slots)
                         {
-                            log::error!("encode error: {}", e);
+                            log::error!("encode error: {e}");
                             continue;
                         }
                         if let Ok(n) = session.send(&buf) {
-                            trace!("START ATU {} bytes pkt sent", n);
+                            trace!("START ATU {n} bytes pkt sent");
                         } else {
                             trace!("session closed by peer");
                             let _ = session.close();
@@ -64,7 +64,7 @@ impl WkSender {
                         if let Err(e) =
                             WkSender::encode(&mut buf, PacketKind::KeyerMessage, tm, &slots)
                         {
-                            log::error!("encode error: {}", e);
+                            log::error!("encode error: {e}");
                             continue;
                         }
                         if let Ok(n) = session.send(&buf) {
@@ -206,10 +206,10 @@ impl WkReceiver {
         if cmd == PacketKind::StartATU as u8 {
             slots.push(MessageRCV::StartATU)
         } else if len == 0 {
-            trace!("Sync {}", tm);
+            trace!("Sync {tm}");
             slots.push(MessageRCV::Sync(tm))
         } else {
-            trace!("Edges {} {} slots", tm, len);
+            trace!("Edges {tm} {len} slots");
             for _ in 0..len {
                 let d = buf.get_u8();
                 let tm = tm + (d & 0x7fu8) as u32;

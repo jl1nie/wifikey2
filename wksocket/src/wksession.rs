@@ -31,7 +31,7 @@ impl Write for UDPOutput {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
         match self.socket.send_to(data, self.peer) {
             Ok(n) => {
-                trace!("{} byte packet sent", n);
+                trace!("{n} byte packet sent");
                 Ok(n)
             }
             Err(e) => {
@@ -215,7 +215,7 @@ impl WkSession {
                     sleep(n)
                 }
                 Err(e) => {
-                    info!("kcp update failed. {}", e);
+                    info!("kcp update failed. {e}");
                     sleep(1000);
                 }
             }
@@ -249,10 +249,7 @@ impl WkSession {
 
                     let pkt = &mut buf[..n];
                     if pkt.len() < kcp::KCP_OVERHEAD {
-                        info!(
-                            "connect: packet too short {} bytes received from {}",
-                            n, peer
-                        );
+                        info!("connect: packet too short {n} bytes received from {peer}");
                         continue;
                     }
                     let Ok(mut s) = client_socket.lock() else {
@@ -365,27 +362,24 @@ impl WkListener {
                         Ok((n, peer)) => {
                             let pkt = &mut buf[..n];
 
-                            trace!("received {}bytes from {}", n, peer);
+                            trace!("received {n}bytes from {peer}");
 
                             if pkt.len() < kcp::KCP_OVERHEAD {
-                                info!(
-                                    "listen: packet too short {} bytes received from {}",
-                                    n, peer
-                                );
+                                info!("listen: packet too short {n} bytes received from {peer}");
                                 continue;
                             }
 
                             let mut conv = kcp::get_conv(pkt);
                             if conv == 0 {
                                 conv = rand::random();
-                                trace!("set new conv ={}", conv);
+                                trace!("set new conv ={conv}");
                                 kcp::set_conv(pkt, conv);
                             }
 
                             if let Some((ref session, current_peer)) = sessions {
                                 if !session.closed() {
                                     if peer == current_peer {
-                                        trace!("input current session {} bytes", n);
+                                        trace!("input current session {n} bytes");
                                         if session.input(pkt).is_ok() {
                                             continue;
                                         }
@@ -398,7 +392,7 @@ impl WkListener {
                                 }
                                 trace!("session closed.");
                             }
-                            trace!("accept new session from peer = {} input {} bytes", peer, n);
+                            trace!("accept new session from peer = {peer} input {n} bytes");
                             let session = match WkSession::new(
                                 udp.clone(),
                                 peer,
@@ -407,12 +401,12 @@ impl WkListener {
                             ) {
                                 Ok(s) => s,
                                 Err(e) => {
-                                    info!("failed to create session: {}", e);
+                                    info!("failed to create session: {e}");
                                     continue;
                                 }
                             };
                             if let Err(e) = session.input(pkt) {
-                                info!("failed to input packet: {}", e);
+                                info!("failed to input packet: {e}");
                                 continue;
                             }
 
@@ -434,7 +428,7 @@ impl WkListener {
         match self.rx.recv() {
             Ok((s, addr)) => Ok((s, addr)),
             Err(e) => {
-                trace!("accept err={}", e);
+                trace!("accept err={e}");
                 Err(e.into())
             }
         }
@@ -461,7 +455,7 @@ pub fn response(session: Arc<WkSession>, passwd: &str) -> Result<u32> {
 
     let mut rcvbuf = Cursor::new(buf);
     let salt = rcvbuf.get_u32();
-    hashstr(&mut buf, &format!("{}{}", passwd, salt));
+    hashstr(&mut buf, &format!("{passwd}{salt}"));
     session.send(&buf)?;
 
     if session.recv_timeout(&mut buf, 1000).is_err() {
@@ -497,7 +491,7 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str) -> Result<u32> {
 
     let response = &buf[..16];
     let mut challenge = [0u8; 16];
-    hashstr(&mut challenge, &format!("{}{}", passwd, chl));
+    hashstr(&mut challenge, &format!("{passwd}{chl}"));
     // Use constant-time comparison to prevent timing attacks
     use subtle::ConstantTimeEq;
     let ok = response.ct_eq(&challenge).into();
@@ -507,10 +501,10 @@ pub fn challenge(session: Arc<WkSession>, passwd: &str) -> Result<u32> {
     session.send(&sendbuf)?;
 
     if ok {
-        info!("auth challenge success {}", res);
+        info!("auth challenge success {res}");
         Ok(res)
     } else {
-        info!("auth challenge failed {:?} {:?}", response, challenge);
+        info!("auth challenge failed {response:?} {challenge:?}");
         bail!("auth challenge failed")
     }
 }

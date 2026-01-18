@@ -132,7 +132,7 @@ fn main() -> Result<()> {
             sleep(5000);
             continue;
         };
-        info!("Remote Server ={}", remote_addr);
+        info!("Remote Server ={remote_addr}");
         let Ok(session) = WkSession::connect(remote_addr, udp) else {
             error!("Failed to connect to server");
             sleep(5000);
@@ -140,7 +140,7 @@ fn main() -> Result<()> {
         };
         if let Err(e) = response(session.clone(), CONFIG.server_password) {
             let _ = session.close();
-            info!("Auth. failed.{:?}", e);
+            info!("Auth. failed.{e:?}");
             sleep(5000);
             continue;
         };
@@ -160,7 +160,7 @@ fn main() -> Result<()> {
                     break;
                 }
                 last_stat = now;
-                trace!("[{}] PKT={} EDGE={}", last_stat, pkt_count, edge_count);
+                trace!("[{last_stat}] PKT={pkt_count} EDGE={edge_count}");
                 edge_count = 0;
                 pkt_count = 0;
             }
@@ -220,7 +220,7 @@ fn main() -> Result<()> {
 
                 let slot_pos = (now - last_sent) as usize;
                 if slot_pos >= PKT_INTERVAL || slot_count >= MAX_SLOTS {
-                    error!("over flow interval = {} slots = {}", slot_pos, slot_count);
+                    error!("over flow interval = {slot_pos} slots = {slot_count}");
                     last_sent = now;
                     slot_count = 0;
                 } else if keyinput.is_high() {
@@ -299,7 +299,7 @@ fn wifi(
 
     let ip_info = wifi.wifi().sta_netif().get_ip_info()?;
 
-    log::info!("Wifi DHCP info: {:?}", ip_info);
+    log::info!("Wifi DHCP info: {ip_info:?}");
 
     Ok(Box::new(esp_wifi))
 }
