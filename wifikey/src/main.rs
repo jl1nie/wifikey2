@@ -124,18 +124,34 @@ fn main() -> Result<()> {
         );
         server.sanity_check();
 
-        let udp = UdpSocket::bind("0.0.0.0:0").unwrap();
-        let remote_addr = server.get_server_addr(&udp).unwrap();
+        let Ok(udp) = UdpSocket::bind("0.0.0.0:0") else {
+            error!("Failed to bind UDP socket");
+            sleep(5000);
+            continue;
+        };
+        let Some(remote_addr) = server.get_server_addr(&udp) else {
+            error!("Failed to get server address");
+            sleep(5000);
+            continue;
+        };
         info!("Remote Server ={}", remote_addr);
-        let session = WkSession::connect(remote_addr, udp).unwrap();
+        let Ok(session) = WkSession::connect(remote_addr, udp) else {
+            error!("Failed to connect to server");
+            sleep(5000);
+            continue;
+        };
         if let Err(e) = response(session.clone(), CONFIG.server_password, CONFIG.sesami) {
-            session.close().unwrap();
+            let _ = session.close();
             info!("Auth. failed.{:?}", e);
             sleep(5000);
             continue;
         };
         info!("Auth. Success");
-        let mut sender = WkSender::new(session).unwrap();
+        let Ok(mut sender) = WkSender::new(session) else {
+            error!("Failed to create sender");
+            sleep(5000);
+            continue;
+        };
         loop {
             sleep(1);
             let now = tick_count();
