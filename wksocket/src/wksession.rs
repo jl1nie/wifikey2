@@ -276,24 +276,36 @@ impl WkSession {
     }
 
     pub fn input(&self, buf: &[u8]) -> Result<()> {
-        let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
+        let mut socket = self
+            .socket
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.input(buf)
     }
 
     pub fn send(&self, buf: &[u8]) -> Result<usize> {
-        let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
+        let mut socket = self
+            .socket
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.send(buf)
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
-        let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
+        let mut socket = self
+            .socket
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.recv(buf)
     }
 
     pub fn recv_timeout(&self, buf: &mut [u8], timeout: u32) -> Result<usize> {
         let now = tick_count();
         while tick_count() - now < timeout {
-            let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
+            let mut socket = self
+                .socket
+                .lock()
+                .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
             if let Ok(n) = socket.recv(buf) {
                 if n > 0 {
                     return Ok(n);
@@ -307,7 +319,10 @@ impl WkSession {
     }
 
     pub fn close(&self) -> Result<()> {
-        let mut socket = self.socket.lock().map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
+        let mut socket = self
+            .socket
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.close();
         self.closed.store(true, Ordering::Relaxed);
         Ok(())

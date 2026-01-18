@@ -46,7 +46,8 @@ impl WkSender {
                     }
                     MessageSND::StartATU => {
                         slots.clear();
-                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::StartATU, 0, &slots) {
+                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::StartATU, 0, &slots)
+                        {
                             log::error!("encode error: {}", e);
                             continue;
                         }
@@ -60,7 +61,9 @@ impl WkSender {
                         }
                     }
                     MessageSND::SendPacket(tm) => {
-                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::KeyerMessage, tm, &slots) {
+                        if let Err(e) =
+                            WkSender::encode(&mut buf, PacketKind::KeyerMessage, tm, &slots)
+                        {
                             log::error!("encode error: {}", e);
                             continue;
                         }
@@ -103,7 +106,9 @@ impl WkSender {
 
     pub fn send(&mut self, msg: MessageSND) -> Result<()> {
         if !self.session_closed.load(Ordering::Relaxed) {
-            self.tx.send(msg).map_err(|e| anyhow::anyhow!("send error: {}", e))
+            self.tx
+                .send(msg)
+                .map_err(|e| anyhow::anyhow!("send error: {}", e))
         } else {
             bail!("session closed by peer")
         }
