@@ -56,6 +56,32 @@ WiFi経由でアマチュア無線トランシーバーのキーイング (CW/�
 
 ## ビルド
 
+本プロジェクトは `cargo-make` をタスクランナーとして使用します。
+
+```bash
+# cargo-make インストール
+cargo install cargo-make
+```
+
+### タスク一覧
+
+| タスク | 説明 |
+|--------|------|
+| `cargo make esp-build` | ESP32ファームウェアビルド (debug) |
+| `cargo make esp-build-release` | ESP32ファームウェアビルド (release) |
+| `cargo make esp-image` | フラッシュ用バイナリ作成 (`wifikey/wifikey.bin`) |
+| `cargo make esp-flash` | ESP32にフラッシュ＆モニタ |
+| `cargo make esp-monitor` | シリアルモニタ |
+| `cargo make esp-erase` | ESP32フラッシュ消去 |
+| `cargo make esp-clippy` | ESP32 clippy |
+| `cargo make esp-fmt` | ESP32フォーマット |
+| `cargo make pc-build` | PCクレートビルド (debug) |
+| `cargo make pc-build-release` | PCクレートビルド (release) |
+| `cargo make pc-clippy` | PC clippy |
+| `cargo make pc-fmt` | PCフォーマット |
+| `cargo make server` | wifikey-server 起動 |
+| `cargo make check` | 全クレートのfmt/clippyチェック |
+
 ### デスクトップアプリ (Tauri)
 
 ```bash
@@ -79,14 +105,23 @@ npm run tauri:build
 ### ESP32ファームウェア
 
 ```bash
-# M5Atom (デフォルト)
-cargo build -p wifikey --release
+# ビルド
+cargo make esp-build-release
 
-# ESP32-WROVER
-cargo build -p wifikey --release --features board_esp32_wrover
+# バイナリ作成 (wifikey/wifikey.bin)
+cargo make esp-image
+
+# フラッシュ＆モニタ
+cargo make esp-flash
+```
+
+手動ビルドの場合:
+```bash
+cd wifikey
+cargo build --release
 
 # フラッシュ (Windowsから)
-espflash flash target/xtensa-esp32-espidf/release/wifikey --monitor
+espflash flash ../target/xtensa-esp32-espidf/release/wifikey --monitor
 ```
 
 ## 設定

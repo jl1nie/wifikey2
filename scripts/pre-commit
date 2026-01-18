@@ -14,7 +14,7 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "Running cargo clippy for PC crates..."
-cargo clippy -p wifikey-server -p wksocket -p mqttstunclient -- -D warnings
+cargo clippy -p wifikey-server -p wksocket -p mqttstunclient --all-targets -- -D warnings
 if [ $? -ne 0 ]; then
     echo "Clippy check failed. Fix warnings before committing."
     exit 1
@@ -36,7 +36,7 @@ if [ -f ~/export-esp.sh ]; then
     fi
 
     echo "Running cargo clippy for wifikey (ESP32)..."
-    (cd wifikey && cargo clippy -- -D warnings)
+    (cd wifikey && cargo clippy --all-targets -- -D warnings)
     if [ $? -ne 0 ]; then
         echo "Clippy check failed for wifikey. Fix warnings before committing."
         exit 1

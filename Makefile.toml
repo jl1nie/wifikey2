@@ -1,0 +1,155 @@
+# ESP32 and PC crate build tasks
+# Usage: cargo make <task>
+
+[config]
+default_to_workspace = false
+
+[env]
+# ESP-IDF toolchain paths (equivalent to ~/export-esp.sh)
+LIBCLANG_PATH = "${HOME}/.rustup/toolchains/esp/xtensa-esp32-elf-clang/esp-19.1.2_20250225/esp-clang/lib"
+ESP_TOOLCHAIN_BIN = "${HOME}/.rustup/toolchains/esp/xtensa-esp-elf/esp-14.2.0_20240906/xtensa-esp-elf/bin"
+PATH = { value = "${ESP_TOOLCHAIN_BIN}:${PATH}", extend = true }
+
+# ============================================================
+# ESP32 Tasks (wifikey)
+# ============================================================
+
+[tasks.esp-build]
+description = "Build ESP32 firmware (debug)"
+workspace = false
+cwd = "./wifikey"
+command = "cargo"
+args = ["build"]
+[tasks.esp-build.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-build-release]
+description = "Build ESP32 firmware (release)"
+workspace = false
+cwd = "./wifikey"
+command = "cargo"
+args = ["build", "--release"]
+[tasks.esp-build-release.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-image]
+description = "Create flashable binary image"
+workspace = false
+dependencies = ["esp-build-release"]
+command = "espflash"
+args = ["save-image", "--chip", "esp32", "--merge", "target/xtensa-esp32-espidf/release/wifikey", "wifikey/wifikey.bin"]
+
+[tasks.esp-flash]
+description = "Flash firmware to ESP32 device"
+workspace = false
+cwd = "./wifikey"
+command = "cargo"
+args = ["run", "--release"]
+[tasks.esp-flash.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-monitor]
+description = "Open serial monitor"
+workspace = false
+command = "espflash"
+args = ["monitor"]
+
+[tasks.esp-erase]
+description = "Erase ESP32 flash"
+workspace = false
+command = "espflash"
+args = ["erase-flash"]
+
+[tasks.esp-clippy]
+description = "Run clippy on ESP32 crate"
+workspace = false
+cwd = "./wifikey"
+command = "cargo"
+args = ["clippy", "--all-targets", "--", "-D", "warnings"]
+[tasks.esp-clippy.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-fmt]
+description = "Format ESP32 crate"
+workspace = false
+cwd = "./wifikey"
+command = "cargo"
+args = ["fmt"]
+[tasks.esp-fmt.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-fmt-check]
+description = "Check format of ESP32 crate"
+workspace = false
+cwd = "./wifikey"
+command = "cargo"
+args = ["fmt", "--check"]
+[tasks.esp-fmt-check.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+# ============================================================
+# PC Tasks (wifikey-server, wksocket, mqttstunclient)
+# ============================================================
+
+[tasks.pc-build]
+description = "Build PC crates (debug)"
+command = "cargo"
+args = ["build", "-p", "wifikey-server", "-p", "wksocket", "-p", "mqttstunclient"]
+
+[tasks.pc-build-release]
+description = "Build PC crates (release)"
+command = "cargo"
+args = ["build", "--release", "-p", "wifikey-server", "-p", "wksocket", "-p", "mqttstunclient"]
+
+[tasks.pc-clippy]
+description = "Run clippy on PC crates"
+command = "cargo"
+args = ["clippy", "-p", "wifikey-server", "-p", "wksocket", "-p", "mqttstunclient", "--all-targets", "--", "-D", "warnings"]
+
+[tasks.pc-fmt]
+description = "Format PC crates"
+command = "cargo"
+args = ["fmt", "-p", "wifikey-server", "-p", "wksocket", "-p", "mqttstunclient"]
+
+[tasks.pc-fmt-check]
+description = "Check format of PC crates"
+command = "cargo"
+args = ["fmt", "--check", "-p", "wifikey-server", "-p", "wksocket", "-p", "mqttstunclient"]
+
+[tasks.server]
+description = "Run wifikey-server"
+command = "cargo"
+args = ["run", "-p", "wifikey-server"]
+
+[tasks.server-release]
+description = "Run wifikey-server (release)"
+command = "cargo"
+args = ["run", "--release", "-p", "wifikey-server"]
+
+# ============================================================
+# Combined Tasks
+# ============================================================
+
+[tasks.build]
+description = "Build all crates"
+dependencies = ["pc-build", "esp-build"]
+
+[tasks.build-release]
+description = "Build all crates (release)"
+dependencies = ["pc-build-release", "esp-build-release"]
+
+[tasks.clippy]
+description = "Run clippy on all crates"
+dependencies = ["pc-clippy", "esp-clippy"]
+
+[tasks.fmt]
+description = "Format all crates"
+dependencies = ["pc-fmt", "esp-fmt"]
+
+[tasks.fmt-check]
+description = "Check format of all crates"
+dependencies = ["pc-fmt-check", "esp-fmt-check"]
+
+[tasks.check]
+description = "Run format check and clippy on all crates"
+dependencies = ["fmt-check", "clippy"]
