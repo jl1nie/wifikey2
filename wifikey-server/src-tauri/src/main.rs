@@ -25,13 +25,15 @@ pub struct SessionStats {
     pub atu_active: bool,
     pub wpm: f32,
     pub pkt_per_sec: usize,
+    /// Round-trip time in milliseconds
+    pub rtt_ms: usize,
 }
 
 /// Get current session statistics
 #[tauri::command]
 fn get_session_stats(state: State<'_, AppState>) -> SessionStats {
     let stats = state.remote_stats.get_session_stats();
-    let (auth, atu, wpm, pkt) = state.remote_stats.get_misc_stats();
+    let (auth, atu, wpm, pkt, rtt) = state.remote_stats.get_misc_stats();
 
     SessionStats {
         session_start: stats.get("session_start").cloned().unwrap_or_default(),
@@ -40,6 +42,7 @@ fn get_session_stats(state: State<'_, AppState>) -> SessionStats {
         atu_active: atu,
         wpm: wpm as f32 / 10.0,
         pkt_per_sec: pkt,
+        rtt_ms: rtt,
     }
 }
 

@@ -8,6 +8,7 @@ const sessionStart = document.getElementById('session-start');
 const peerAddress = document.getElementById('peer-address');
 const wpmValue = document.getElementById('wpm-value');
 const pktValue = document.getElementById('pkt-value');
+const rttValue = document.getElementById('rtt-value');
 const atuBtn = document.getElementById('atu-btn');
 const logToggle = document.getElementById('log-toggle');
 const logArrow = document.getElementById('log-arrow');
@@ -74,6 +75,7 @@ async function updateStats() {
         // Update statistics
         wpmValue.textContent = stats.wpm.toFixed(1);
         pktValue.textContent = stats.pkt_per_sec;
+        rttValue.textContent = stats.rtt_ms;
         
         // Update title color based on auth status
         if (stats.auth_ok) {

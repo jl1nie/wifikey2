@@ -88,6 +88,71 @@ args = ["fmt", "--check"]
 RUSTUP_TOOLCHAIN = "esp"
 
 # ============================================================
+# ESP32 Server Tasks (wifikey-esp32-server)
+# ============================================================
+
+[tasks.esp-server-build]
+description = "Build ESP32 Server firmware (debug)"
+workspace = false
+cwd = "./wifikey-esp32-server"
+command = "cargo"
+args = ["build"]
+[tasks.esp-server-build.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-server-build-release]
+description = "Build ESP32 Server firmware (release)"
+workspace = false
+cwd = "./wifikey-esp32-server"
+command = "cargo"
+args = ["build", "--release"]
+[tasks.esp-server-build-release.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-server-image]
+description = "Create flashable binary image for ESP32 Server"
+workspace = false
+dependencies = ["esp-server-build-release"]
+command = "espflash"
+args = ["save-image", "--chip", "esp32", "--merge", "target/xtensa-esp32-espidf/release/wifikey-esp32-server", "wifikey-esp32-server/wifikey-esp32-server.bin"]
+
+[tasks.esp-server-flash]
+description = "Flash ESP32 Server firmware to device"
+workspace = false
+cwd = "./wifikey-esp32-server"
+command = "cargo"
+args = ["run", "--release"]
+[tasks.esp-server-flash.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-server-clippy]
+description = "Run clippy on ESP32 Server crate"
+workspace = false
+cwd = "./wifikey-esp32-server"
+command = "cargo"
+args = ["clippy", "--all-targets", "--", "-D", "warnings"]
+[tasks.esp-server-clippy.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-server-fmt]
+description = "Format ESP32 Server crate"
+workspace = false
+cwd = "./wifikey-esp32-server"
+command = "cargo"
+args = ["fmt"]
+[tasks.esp-server-fmt.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+[tasks.esp-server-fmt-check]
+description = "Check format of ESP32 Server crate"
+workspace = false
+cwd = "./wifikey-esp32-server"
+command = "cargo"
+args = ["fmt", "--check"]
+[tasks.esp-server-fmt-check.env]
+RUSTUP_TOOLCHAIN = "esp"
+
+# ============================================================
 # PC Tasks (wifikey-server, wksocket, mqttstunclient)
 # ============================================================
 
@@ -132,23 +197,23 @@ args = ["run", "--release", "-p", "wifikey-server"]
 
 [tasks.build]
 description = "Build all crates"
-dependencies = ["pc-build", "esp-build"]
+dependencies = ["pc-build", "esp-build", "esp-server-build"]
 
 [tasks.build-release]
 description = "Build all crates (release)"
-dependencies = ["pc-build-release", "esp-build-release"]
+dependencies = ["pc-build-release", "esp-build-release", "esp-server-build-release"]
 
 [tasks.clippy]
 description = "Run clippy on all crates"
-dependencies = ["pc-clippy", "esp-clippy"]
+dependencies = ["pc-clippy", "esp-clippy", "esp-server-clippy"]
 
 [tasks.fmt]
 description = "Format all crates"
-dependencies = ["pc-fmt", "esp-fmt"]
+dependencies = ["pc-fmt", "esp-fmt", "esp-server-fmt"]
 
 [tasks.fmt-check]
 description = "Check format of all crates"
-dependencies = ["pc-fmt-check", "esp-fmt-check"]
+dependencies = ["pc-fmt-check", "esp-fmt-check", "esp-server-fmt-check"]
 
 [tasks.check]
 description = "Run format check and clippy on all crates"

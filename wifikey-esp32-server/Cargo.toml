@@ -1,0 +1,37 @@
+[package]
+name = "wifikey-esp32-server"
+version = "0.1.0"
+authors = ["Minoru Tomobe <minoru.tomobe@gmail.com>"]
+edition = "2021"
+rust-version = "1.71"
+description = "WifiKey ESP32 Server - PC-less CW keying receiver"
+
+[features]
+default = ["std", "esp-idf-svc/native", "board_m5atom"]
+
+pio = ["std", "esp-idf-svc/pio"]
+std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std"]
+alloc = ["esp-idf-svc/alloc"]
+board_m5atom = []
+board_esp32_wrover = []
+
+[patch.crates-io]
+tokio = { git = "https://github.com/tokio-rs/tokio", branch = "master" }
+mio = { git = "https://github.com/tokio-rs/mio", branch = "master" }
+socket2 = { git = "https://github.com/rust-lang/socket2", branch = "master" }
+
+[dependencies]
+anyhow = "1"
+bytes = "1.1"
+esp-idf-sys = { version = "0.36", features = ["binstart"] }
+esp-idf-svc = { version = "0.51", features = ["experimental"] }
+esp-idf-hal = "0.45.2"
+log = { version = "0.4", default-features = false }
+smart-leds = "0.4"
+ws2812-esp32-rmt-driver = { version = "0.12.0", features = ["smart-leds-trait"] }
+toml-cfg = "0.2"
+wksocket = { path = "../wksocket" }
+mqttstunclient = { path = "../mqttstunclient", default-features = false, features = ["esp-idf-mqtt"] }
+
+[build-dependencies]
+embuild = "0.33"

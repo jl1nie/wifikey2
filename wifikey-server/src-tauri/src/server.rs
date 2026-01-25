@@ -49,6 +49,8 @@ pub struct RemoteStats {
     pub atu_start: Arc<AtomicBool>,
     pub wpm: Arc<AtomicUsize>,
     pub pkt: Arc<AtomicUsize>,
+    /// Round-trip time in milliseconds (estimated from sync timing)
+    pub rtt_ms: Arc<AtomicUsize>,
 }
 
 impl Default for RemoteStats {
@@ -61,6 +63,7 @@ impl Default for RemoteStats {
             atu_start: Arc::new(AtomicBool::new(false)),
             wpm: Arc::new(AtomicUsize::new(0)),
             pkt: Arc::new(AtomicUsize::new(0)),
+            rtt_ms: Arc::new(AtomicUsize::new(0)),
         }
     }
 }
@@ -120,12 +123,18 @@ impl RemoteStats {
     }
 
     #[allow(dead_code)]
-    pub fn get_misc_stats(&self) -> (bool, bool, usize, usize) {
+    pub fn set_rtt(&self, rtt_ms: usize) {
+        self.rtt_ms.store(rtt_ms, Ordering::Relaxed);
+    }
+
+    #[allow(dead_code)]
+    pub fn get_misc_stats(&self) -> (bool, bool, usize, usize, usize) {
         (
             self.auth_ok.load(Ordering::Relaxed),
             self.atu_start.load(Ordering::Relaxed),
             self.wpm.load(Ordering::Relaxed),
             self.pkt.load(Ordering::Relaxed),
+            self.rtt_ms.load(Ordering::Relaxed),
         )
     }
 

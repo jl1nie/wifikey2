@@ -180,6 +180,8 @@ impl RemoteKeyer {
         let asserted_wdg = asserted.clone();
         let mut pkt = 0usize;
         let mut duration_max = 1usize;
+        let mut last_sync_local = 0u32;
+        let mut rtt_estimate = 0usize;
 
         let rigcon_wdg = self.rigcontrol.clone();
         let rigcon = self.rigcontrol.clone();
@@ -200,14 +202,37 @@ impl RemoteKeyer {
                         MessageRCV::Sync(rmt) => {
                             // Sync remote/local time every 3 sec
                             if rmt - rmt_epoch > 3000 {
+                                let now = tick_count();
+
+                                // Estimate RTT from sync interval timing
+                                // The remote sends Sync every ~3000ms, so deviation indicates network delay
+                                if last_sync_local > 0 {
+                                    let local_interval = now - last_sync_local;
+                                    let remote_interval = rmt - rmt_epoch;
+                                    // RTT estimate: difference between local and remote intervals
+                                    // This captures one-way delay variation
+                                    let diff = if local_interval > remote_interval {
+                                        (local_interval - remote_interval) as usize
+                                    } else {
+                                        (remote_interval - local_interval) as usize
+                                    };
+                                    // Use exponential moving average for smoothing
+                                    rtt_estimate = (rtt_estimate * 7 + diff * 10) / 8;
+                                }
+                                last_sync_local = now;
+
                                 rmt_epoch = rmt;
-                                epoch = tick_count();
-                                info!("Sync rmt={} local={}", rmt_epoch, epoch);
+                                epoch = now;
+                                info!(
+                                    "Sync rmt={} local={} rtt~{}ms",
+                                    rmt_epoch, epoch, rtt_estimate
+                                );
                                 if duration_max == 0 {
                                     stat.set_stats(0, pkt / 3);
                                 } else {
                                     stat.set_stats(1000 / duration_max * 36, pkt / 3);
                                 };
+                                stat.set_rtt(rtt_estimate);
                                 duration_max = 0;
                                 pkt = 0;
                                 stat.set_session_active(true);

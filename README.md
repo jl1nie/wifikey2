@@ -212,6 +212,8 @@ ESP32とPCが同一LAN内にある場合:
 
 ## アーキテクチャ
 
+### PC経由の構成 (wifikey-server)
+
 ```
 ┌─────────────────┐     MQTT/STUN      ┌─────────────────┐
 │  wifikey        │◄──────────────────►│  wifikey-server │
@@ -228,6 +230,25 @@ ESP32とPCが同一LAN内にある場合:
                                        └─────────────────┘
 ```
 
+### PC不要の構成 (wifikey-esp32-server)
+
+```
+┌─────────────────┐     MQTT/STUN      ┌─────────────────┐
+│  wifikey        │◄──────────────────►│wifikey-esp32-   │
+│  (ESP32 Client) │     KCP (UDP)      │server (ESP32)   │
+│                 │                    │                 │
+│  - パドル入力   │                    │  - GPIO出力     │
+│  - LED表示      │                    │  - キーイング   │
+└─────────────────┘                    └────────┬────────┘
+                                                │ Photocoupler
+                                       ┌────────▼────────┐
+                                       │  Transceiver    │
+                                       │  (無線機)       │
+                                       └─────────────────┘
+```
+
+wifikey-esp32-serverを使用すると、PCなしでリモートキーイングが可能です。ESP32サーバーがGPIO出力でフォトカプラを駆動し、無線機をキーイングします。
+
 ## ハードウェア
 
 ### 対応ボード
@@ -242,6 +263,8 @@ ESP32とPCが同一LAN内にある場合:
 
 各ボードのデフォルトGPIO設定は以下の通りです。Web設定画面またはATコマンドで変更可能です。
 
+#### wifikey (クライアント)
+
 | ボード | KEY_INPUT | BUTTON | LED |
 |--------|-----------|--------|-----|
 | M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (シリアルLED) |
@@ -250,6 +273,18 @@ ESP32とPCが同一LAN内にある場合:
 
 - **KEY_INPUT**: パドル/ストレートキー入力 (内部プルアップ、フォトカプラ経由)
 - **BUTTON**: ATU起動 / APモード切替ボタン (内部プルアップ)
+- **LED**: 状態表示LED
+
+#### wifikey-esp32-server (サーバー)
+
+| ボード | KEY_OUTPUT | BUTTON | LED |
+|--------|------------|--------|-----|
+| M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (シリアルLED) |
+| ESP32-WROVER | GPIO4 | GPIO12 | GPIO16 |
+| その他 | GPIO4 | GPIO0 | GPIO2 |
+
+- **KEY_OUTPUT**: キーイング出力 (フォトカプラへ、Activeで送信)
+- **BUTTON**: APモード切替ボタン (内部プルアップ)
 - **LED**: 状態表示LED
 
 ### LED制御の違い
@@ -287,7 +322,8 @@ let mut led = PinDriver::output(led_pin)?;
 
 | クレート | 説明 |
 |----------|------|
-| `wifikey` | ESP32ファームウェア (M5Atom / ESP32-WROVER) |
+| `wifikey` | ESP32クライアント (パドル入力送信) |
+| `wifikey-esp32-server` | ESP32サーバー (PC不要でリグ制御) |
 | `wifikey-server` | デスクトップGUIアプリ (**Tauri 2.x**) |
 | `wksocket` | KCPベースの通信ライブラリ |
 | `mqttstunclient` | MQTT + STUNクライアント |
@@ -326,14 +362,20 @@ cargo install cargo-make
 
 | タスク | 説明 |
 |--------|------|
-| `cargo make esp-build` | ESP32ファームウェアビルド (debug) |
-| `cargo make esp-build-release` | ESP32ファームウェアビルド (release) |
-| `cargo make esp-image` | フラッシュ用バイナリ作成 (`wifikey/wifikey.bin`) |
-| `cargo make esp-flash` | ESP32にフラッシュ＆モニタ |
+| `cargo make esp-build` | ESP32クライアントビルド (debug) |
+| `cargo make esp-build-release` | ESP32クライアントビルド (release) |
+| `cargo make esp-image` | クライアント用バイナリ作成 (`wifikey/wifikey.bin`) |
+| `cargo make esp-flash` | ESP32クライアントにフラッシュ |
+| `cargo make esp-server-build` | ESP32サーバービルド (debug) |
+| `cargo make esp-server-build-release` | ESP32サーバービルド (release) |
+| `cargo make esp-server-image` | サーバー用バイナリ作成 |
+| `cargo make esp-server-flash` | ESP32サーバーにフラッシュ |
 | `cargo make esp-monitor` | シリアルモニタ |
 | `cargo make esp-erase` | ESP32フラッシュ消去 |
-| `cargo make esp-clippy` | ESP32 clippy |
-| `cargo make esp-fmt` | ESP32フォーマット |
+| `cargo make esp-clippy` | ESP32クライアント clippy |
+| `cargo make esp-server-clippy` | ESP32サーバー clippy |
+| `cargo make esp-fmt` | ESP32クライアントフォーマット |
+| `cargo make esp-server-fmt` | ESP32サーバーフォーマット |
 | `cargo make pc-build` | PCクレートビルド (debug) |
 | `cargo make pc-build-release` | PCクレートビルド (release) |
 | `cargo make pc-clippy` | PC clippy |
@@ -521,6 +563,51 @@ server_password = "your-password"
 | 📡 | ESP32設定 (USBシリアル経由) |
 | Start ATU | ATU起動コマンド送信 |
 
+### パフォーマンスダッシュボード
+
+サーバーアプリには以下の統計情報がリアルタイム表示されます:
+
+| 項目 | 説明 |
+|------|------|
+| WPM | 送信速度 (PARIS基準、ドット長から計算) |
+| pkt/s | パケットレート |
+| RTT | 推定ラウンドトリップ時間 (ms) |
+
+## ESP32サーバー (PC不要運用)
+
+wifikey-esp32-serverを使用すると、PCなしでリモートキーイングが可能です。
+
+### ESP32サーバーの設定
+
+設定方法はクライアントと同様です (APモード + Web設定画面 または ATコマンド)。
+
+1. ESP32サーバーを起動 (初回はAPモード)
+2. `WkServer-XXXXXX` WiFiに接続
+3. `http://192.168.4.1` で設定画面を開く
+4. 以下を設定:
+   - WiFi SSID / パスワード
+   - サーバー名 (自分の識別子、例: `JA1XXX/keyer`)
+   - 接続パスワード (クライアントがこのパスワードで接続)
+
+### ESP32サーバーのATコマンド
+
+クライアントと同じコマンドが使用可能ですが、GPIO表示が異なります:
+
+```
+AT+GPIO     # GPIO設定表示 (KEY_OUTPUT, BUTTON, LED)
+AT+GPIO=19,39,27  # GPIO設定変更
+```
+
+### ESP32サーバービルド
+
+```bash
+# ビルド
+cargo make esp-server-build-release
+
+# フラッシュ
+cargo make esp-server-flash
+```
+
 ## 機能
 
 - **リモートキーイング**: パドル操作をリアルタイム伝送
@@ -531,6 +618,8 @@ server_password = "your-password"
 - **リグ制御**: CAT経由での周波数/モード制御
 - **設定GUI**: シリアルポート選択・設定保存 (Tauri版)
 - **ESP32簡単設定**: APモード/Web画面またはUSBシリアルで設定
+- **PC不要運用**: ESP32サーバーによるスタンドアロン動作
+- **パフォーマンスダッシュボード**: WPM、RTT、パケットレート表示
 
 ## NAT Traversal
 
