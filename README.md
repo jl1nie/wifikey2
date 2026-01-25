@@ -228,6 +228,61 @@ ESP32とPCが同一LAN内にある場合:
                                        └─────────────────┘
 ```
 
+## ハードウェア
+
+### 対応ボード
+
+| ボード | 特徴 |
+|--------|------|
+| M5Atom Lite | 小型、内蔵シリアルLED (WS2812)、ATOMIC Proto Kit使用 |
+| ESP32-WROVER | 汎用、ブレッドボード構成 |
+| その他ESP32 | 汎用デフォルト設定 |
+
+### GPIO設定
+
+各ボードのデフォルトGPIO設定は以下の通りです。Web設定画面またはATコマンドで変更可能です。
+
+| ボード | KEY_INPUT | BUTTON | LED |
+|--------|-----------|--------|-----|
+| M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (シリアルLED) |
+| ESP32-WROVER | GPIO4 | GPIO12 | GPIO16 |
+| その他 | GPIO4 | GPIO0 | GPIO2 |
+
+- **KEY_INPUT**: パドル/ストレートキー入力 (内部プルアップ、フォトカプラ経由)
+- **BUTTON**: ATU起動 / APモード切替ボタン (内部プルアップ)
+- **LED**: 状態表示LED
+
+### LED制御の違い
+
+| ボード | LED種類 | 制御方式 |
+|--------|---------|----------|
+| M5Atom Lite | 内蔵WS2812 (シリアルLED) | RMTペリフェラル、GPIO27固定 |
+| その他 | 通常LED | GPIO出力、設定で変更可能 |
+
+M5Atom以外のボードでシリアルLED (WS2812等) を使用する場合は、`wifikey/src/main.rs` の以下の箇所を変更してください:
+
+```rust
+// 85行目付近: M5Atom用のシリアルLED初期化
+#[cfg(feature = "board_m5atom")]
+let mut serial_led =
+    Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio27).unwrap();
+
+// 97行目付近: 通常LED初期化 (この部分をシリアルLED用に変更)
+#[cfg(not(feature = "board_m5atom"))]
+let led_pin = unsafe { pin_from_num(gpio_config.led as i32) };
+#[cfg(not(feature = "board_m5atom"))]
+let mut led = PinDriver::output(led_pin)?;
+```
+
+### 回路構成
+
+詳細な回路図・部品リストについては [WiFiKey (旧バージョン)](https://github.com/jl1nie/WiFiKey) を参照してください。
+
+基本構成:
+- フォトカプラ (PC817等) によるキー入力の絶縁
+- 100Ω電流制限抵抗
+- GPIO入力は内部プルアップを使用
+
 ## クレート構成
 
 | クレート | 説明 |
