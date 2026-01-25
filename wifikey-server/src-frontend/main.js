@@ -39,9 +39,19 @@ async function initializeApp() {
 function setupEventListeners() {
     // ATU button
     atuBtn.addEventListener('click', handleStartATU);
-    
+
     // Log toggle
     logToggle.addEventListener('click', toggleLog);
+
+    // ESP32 config button
+    const esp32Btn = document.getElementById('esp32-btn');
+    if (esp32Btn) {
+        esp32Btn.addEventListener('click', () => {
+            if (typeof window.openEsp32Modal === 'function') {
+                window.openEsp32Modal();
+            }
+        });
+    }
 }
 
 // Statistics update
@@ -116,20 +126,23 @@ function toggleLog() {
 function addLogEntry(message, level = 'info') {
     const entry = document.createElement('div');
     entry.className = `log-entry ${level}`;
-    
+
     const timestamp = new Date().toLocaleTimeString();
     entry.textContent = `[${timestamp}] ${message}`;
-    
+
     logContent.appendChild(entry);
-    
+
     // Auto-scroll to bottom
     logContent.scrollTop = logContent.scrollHeight;
-    
+
     // Limit log entries to 100
     while (logContent.children.length > 100) {
         logContent.removeChild(logContent.firstChild);
     }
 }
+
+// Export for other modules
+window.addLogEntry = addLogEntry;
 
 function setupLogListener() {
     // Listen for log events from Tauri plugin-log
