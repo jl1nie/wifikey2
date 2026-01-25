@@ -353,3 +353,98 @@ body {
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-secondary);
 }
+
+/* ESP32 Config Modal Additions */
+.modal-wide {
+    max-width: 500px;
+}
+
+.port-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.port-row select {
+    flex: 1;
+}
+
+.btn-small {
+    padding: 8px 12px;
+    font-size: 0.8rem;
+}
+
+.btn-danger {
+    background-color: var(--error);
+    color: white;
+}
+
+.btn-danger:hover {
+    background-color: #d32f2f;
+}
+
+.info-box {
+    background-color: var(--bg-primary);
+    padding: 12px;
+    border-radius: 4px;
+    margin-bottom: 16px;
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 0.85rem;
+}
+
+.hidden {
+    display: none !important;
+}
+
+.profile-list {
+    margin-bottom: 20px;
+}
+
+.profile-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    background-color: var(--bg-primary);
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+
+.profile-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.profile-ssid {
+    font-weight: 500;
+}
+
+.profile-arrow {
+    color: var(--text-secondary);
+}
+
+.profile-server {
+    color: var(--accent-primary);
+}
+
+.no-profiles {
+    color: var(--text-secondary);
+    padding: 12px;
+    text-align: center;
+}
+
+.form-row {
+    display: flex;
+    gap: 12px;
+}
+
+.form-row .form-group {
+    flex: 1;
+}
+
+#esp32-profile-section h3 {
+    font-size: 1rem;
+    margin-bottom: 12px;
+    color: var(--text-secondary);
+}

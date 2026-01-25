@@ -84,6 +84,134 @@ fn get_serial_ports() -> Vec<String> {
     list_serial_ports()
 }
 
+// ============================================================
+// ESP32 Serial Configuration Commands
+// ============================================================
+
+/// ESP32 profile info returned from device
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Esp32Profile {
+    pub index: usize,
+    pub ssid: String,
+    pub server_name: String,
+}
+
+/// Send AT command to ESP32 via serial and get response
+#[tauri::command]
+async fn esp32_send_command(port: String, command: String) -> Result<String, String> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::time::Duration;
+
+    let mut serial = serialport::new(&port, 115200)
+        .timeout(Duration::from_secs(3))
+        .open()
+        .map_err(|e| format!("Failed to open port: {}", e))?;
+
+    // Send command with CRLF
+    let cmd = format!("{}\r\n", command);
+    serial
+        .write_all(cmd.as_bytes())
+        .map_err(|e| format!("Write failed: {}", e))?;
+    serial.flush().map_err(|e| format!("Flush failed: {}", e))?;
+
+    // Read response until OK or ERROR
+    let mut response = String::new();
+    let mut reader = BufReader::new(serial);
+
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                response.push_str(&line);
+                if line.contains("OK") || line.contains("ERROR") {
+                    break;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+            Err(e) => return Err(format!("Read failed: {}", e)),
+        }
+    }
+
+    Ok(response)
+}
+
+/// Get ESP32 profile list
+#[tauri::command]
+async fn esp32_list_profiles(port: String) -> Result<Vec<Esp32Profile>, String> {
+    let response = esp32_send_command(port, "AT+LIST".to_string()).await?;
+
+    let mut profiles = Vec::new();
+    for line in response.lines() {
+        // Parse: [0] SSID=xxx SERVER=yyy
+        if let Some(rest) = line.strip_prefix('[') {
+            if let Some(idx_end) = rest.find(']') {
+                let index: usize = rest[..idx_end].parse().unwrap_or(0);
+                let rest = &rest[idx_end + 1..];
+
+                let ssid = rest
+                    .split("SSID=")
+                    .nth(1)
+                    .and_then(|s| s.split_whitespace().next())
+                    .unwrap_or("")
+                    .to_string();
+
+                let server_name = rest
+                    .split("SERVER=")
+                    .nth(1)
+                    .and_then(|s| s.split_whitespace().next())
+                    .unwrap_or("")
+                    .to_string();
+
+                if !ssid.is_empty() {
+                    profiles.push(Esp32Profile {
+                        index,
+                        ssid,
+                        server_name,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(profiles)
+}
+
+/// Add profile to ESP32
+#[tauri::command]
+async fn esp32_add_profile(
+    port: String,
+    ssid: String,
+    wifi_password: String,
+    server_name: String,
+    server_password: String,
+) -> Result<String, String> {
+    let cmd = format!(
+        "AT+ADD={},{},{},{}",
+        ssid, wifi_password, server_name, server_password
+    );
+    esp32_send_command(port, cmd).await
+}
+
+/// Delete profile from ESP32
+#[tauri::command]
+async fn esp32_delete_profile(port: String, index: usize) -> Result<String, String> {
+    let cmd = format!("AT+DEL={}", index);
+    esp32_send_command(port, cmd).await
+}
+
+/// Restart ESP32
+#[tauri::command]
+async fn esp32_restart(port: String) -> Result<String, String> {
+    esp32_send_command(port, "AT+RESTART".to_string()).await
+}
+
+/// Get ESP32 device info
+#[tauri::command]
+async fn esp32_info(port: String) -> Result<String, String> {
+    esp32_send_command(port, "AT+INFO".to_string()).await
+}
+
 /// Restart server with new configuration
 async fn restart_server_internal(
     state: &State<'_, AppState>,
@@ -173,6 +301,12 @@ fn main() {
             get_config,
             save_config,
             get_serial_ports,
+            esp32_send_command,
+            esp32_list_profiles,
+            esp32_add_profile,
+            esp32_delete_profile,
+            esp32_restart,
+            esp32_info,
         ])
         .setup(|_app| {
             log::info!("WiFiKey2 server started");
