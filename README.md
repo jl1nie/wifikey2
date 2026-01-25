@@ -1,41 +1,80 @@
 # wifikey2
 
-WiFi経由でアマチュア無線トランシーバーのキーイング (CW/モールス信号) をリモート制御するシステム。
+> **[日本語版 README はこちら](README-ja.md)**
 
-## 概要
+Remote CW (Morse code) keying system for amateur radio transceivers over WiFi.
 
-本プロジェクトは、ESP32を使用したワイヤレスCWパドルと、PC上で動作するサーバーアプリケーションで構成されます。自宅の無線機を外出先からリモート操作したり、シャック内でワイヤレスパドルとして使用できます。
+## Overview
 
-### 解決する課題
+This project consists of an ESP32-based wireless CW paddle and a server application (PC or ESP32). It enables remote operation of your home station from anywhere, or can be used as a wireless paddle within your shack.
 
-1. **NAT越え**: 一般家庭のルーター配下にあるPCに、外部からP2P接続する
-2. **低遅延通信**: CWキーイングには数十ミリ秒以下の遅延が求められる
-3. **信頼性**: パケットロスがあってもキーイング情報を確実に伝送する
-4. **簡単な設定**: ポート開放やDDNS設定なしで接続できる
+### Problems Solved
 
-## キーイングパケットのエンコード方式
+1. **NAT Traversal**: P2P connection to a PC behind a home router without port forwarding
+2. **Low Latency**: CW keying requires sub-100ms latency
+3. **Reliability**: Reliable transmission of keying data despite packet loss
+4. **Easy Setup**: No port forwarding or DDNS configuration required
 
-CWキーイングでは、キーの押下/解放タイミングを正確に伝送することが重要です。本システムでは、50ms間隔でパケットを送信し、その間に発生した複数のエッジ（状態変化）を1パケットにまとめて送信します。
+## Architecture
 
-### パケット構造
+### PC-based Configuration (wifikey-server)
+
+```
+┌─────────────────┐     MQTT/STUN      ┌─────────────────┐
+│  wifikey        │◄──────────────────►│  wifikey-server │
+│  (ESP32)        │     KCP (UDP)      │  (PC)           │
+│                 │                    │                 │
+│  - Paddle input │                    │  - Rig control  │
+│  - LED display  │                    │  - Keying       │
+└─────────────────┘                    │  - GUI (Tauri)  │
+                                       └────────┬────────┘
+                                                │ Serial
+                                       ┌────────▼────────┐
+                                       │  Transceiver    │
+                                       └─────────────────┘
+```
+
+### PC-less Configuration (wifikey-esp32-server)
+
+```
+┌─────────────────┐     MQTT/STUN      ┌─────────────────┐
+│  wifikey        │◄──────────────────►│wifikey-esp32-   │
+│  (ESP32 Client) │     KCP (UDP)      │server (ESP32)   │
+│                 │                    │                 │
+│  - Paddle input │                    │  - GPIO output  │
+│  - LED display  │                    │  - Keying       │
+└─────────────────┘                    └────────┬────────┘
+                                                │ Photocoupler
+                                       ┌────────▼────────┐
+                                       │  Transceiver    │
+                                       └─────────────────┘
+```
+
+With wifikey-esp32-server, remote keying is possible without a PC. The ESP32 server drives a photocoupler via GPIO output to key the transceiver.
+
+## Keying Packet Encoding
+
+CW keying requires precise timing of key press/release events. This system sends packets at 50ms intervals, bundling multiple edges (state changes) that occurred during that interval.
+
+### Packet Structure
 
 ```
 ┌─────────┬────────────┬──────────┬─────────────────────────┐
-│ Command │ Timestamp  │ EdgeCount│ Edge Data (0-128個)     │
+│ Command │ Timestamp  │ EdgeCount│ Edge Data (0-128)       │
 │ (1byte) │ (4bytes)   │ (1byte)  │ (EdgeCount bytes)       │
 └─────────┴────────────┴──────────┴─────────────────────────┘
 ```
 
-| フィールド | サイズ | 説明 |
-|-----------|--------|------|
-| Command | 1 byte | パケット種別 (0x00=キーイング, 0x01=ATU) |
-| Timestamp | 4 bytes | パケット送信時刻 (ms, Big Endian) |
-| EdgeCount | 1 byte | エッジデータの個数 (0-128) |
-| Edge Data | N bytes | 各エッジの情報 |
+| Field | Size | Description |
+|-------|------|-------------|
+| Command | 1 byte | Packet type (0x00=Keying, 0x01=ATU) |
+| Timestamp | 4 bytes | Packet send time (ms, Big Endian) |
+| EdgeCount | 1 byte | Number of edge data entries (0-128) |
+| Edge Data | N bytes | Edge information |
 
-### エッジデータ形式
+### Edge Data Format
 
-各エッジは1バイトで表現されます:
+Each edge is represented in 1 byte:
 
 ```
 ┌─────┬───────────────────┐
@@ -44,658 +83,491 @@ CWキーイングでは、キーの押下/解放タイミングを正確に伝�
 └─────┴───────────────────┘
 ```
 
-- **Dir (bit7)**: キーの方向
-  - `0` = キーダウン（押下）
-  - `1` = キーアップ（解放）
-- **Offset (bit0-6)**: Timestampからのオフセット (0-127ms)
+- **Dir (bit7)**: Key direction
+  - `0` = Key down (press)
+  - `1` = Key up (release)
+- **Offset (bit0-6)**: Offset from Timestamp (0-127ms)
 
-### 動作例
+### Design Benefits
 
-50ms間隔でパケットを送信する場合:
+1. **Batch Processing**: Multiple edges in one packet reduces packet count
+2. **Relative Timing**: Offset format achieves 127ms precision with 7 bits
+3. **Lightweight**: Fixed 1 byte per edge simplifies processing
+4. **Packet Loss Tolerance**: KCP retransmission ensures reliable edge delivery
+5. **Sync Packets**: Regular packets maintain connection and time synchronization even without edges
 
-```
-時刻: 1000ms         1050ms        1100ms
-      │              │              │
-      ├──────────────┼──────────────┤
-      │   パケット1   │   パケット2   │
-      │              │              │
+## Fail-Safe Mechanism
 
-パケット1 (Timestamp=1000):
-  - EdgeCount=0 (エッジなし = Syncパケット)
+The server implements a watchdog timer to protect against stuck key states.
 
-時刻1005msでキーダウン、1025msでキーアップ:
+### Watchdog Timer
 
-パケット2 (Timestamp=1050):
-  - EdgeCount=2
-  - Edge[0] = 0x05 (Dir=0, Offset=5)  → Keydown at 1055ms
-  - Edge[1] = 0x99 (Dir=1, Offset=25) → Keyup at 1075ms
-```
+| Item | Value | Description |
+|------|-------|-------------|
+| Timeout | 10 seconds | Key release after 10s of continuous assertion |
+| Action | Auto key-up | Forcibly releases key on timeout |
 
-### 設計の利点
+Normal CW operation never requires 10 seconds of continuous transmission, but ATU (Antenna Tuner Unit) tuning may require several seconds of carrier. The 10-second margin accommodates this.
 
-1. **バッチ処理**: 複数のエッジを1パケットに集約し、パケット数を削減
-2. **相対時刻**: オフセット形式により、7ビットで最大127msの精度を実現
-3. **軽量**: 1エッジ=1バイトの固定長で処理が単純
-4. **パケットロス耐性**: KCPによる再送でエッジ情報を確実に配送
-5. **Syncパケット**: エッジがなくても定期的にパケットを送信し、接続維持と時刻同期
+If a key-up signal cannot be received due to disconnection or client crash, transmission automatically stops after 10 seconds, protecting the transceiver and preventing spurious emissions.
 
-### パケット種別
+## Technology Stack
 
-| Command | 値 | 説明 |
-|---------|-----|------|
-| KeyerMessage | 0x00 | キーイングデータ (エッジ情報含む) |
-| StartATU | 0x01 | ATU起動コマンド |
+### Why KCP?
 
-## フェイルセーフ機構
+**Problem**: TCP has reliability but Head-of-Line Blocking causes latency spikes on packet loss. Pure UDP has low latency but cannot handle packet loss or reordering.
 
-サーバー側には、キーが押されたまま異常終了した場合などに備えて、ウォッチドッグタイマーが実装されています。
+**Solution**: KCP (KCP Protocol) is a fast, reliable protocol built on UDP.
 
-### ウォッチドッグタイマー
+| Property | TCP | UDP | KCP |
+|----------|-----|-----|-----|
+| Reliability | ○ | × | ○ |
+| Ordering | ○ | × | ○ |
+| Low Latency | △ | ○ | ○ |
+| Packet Loss Handling | △ (increased delay) | × | ○ (immediate retransmit) |
 
-| 項目 | 値 | 説明 |
-|------|-----|------|
-| タイムアウト | 10秒 | キー押下から10秒でタイムアウト |
-| 動作 | 自動キーアップ | タイムアウト時に強制的にキーを解放 |
+KCP Features:
+- **Immediate Retransmit**: Fast retransmit without waiting for RTO
+- **Selective Retransmit**: Only retransmits lost packets (SACK-like)
+- **No Delayed ACK**: Designed for low latency
+- **Configurable Window**: Adjustable for network conditions
 
-通常のCW操作では10秒の連続送信はありえませんが、ATU（アンテナチューナー）のチューニング動作では数秒間キャリアを出し続けることがあるため、余裕をもって10秒に設定しています。
+### Why STUN?
 
-万が一、通信切断やクライアント異常終了でキーアップ信号が受信できない場合でも、10秒後には自動的に送信が停止し、無線機の保護と電波の不要輻射を防ぎます。
+**Problem**: Home routers use NAT, preventing direct external connections. Port forwarding is complex, and impossible in double-NAT or CGN environments.
 
-## 技術スタック
+**Solution**: STUN (Session Traversal Utilities for NAT) obtains global addresses, enabling UDP hole punching through NAT.
 
-```
-┌─────────────┐                           ┌─────────────┐
-│   ESP32     │                           │   PC        │
-│   (Client)  │                           │   (Server)  │
-├─────────────┤     KCP over UDP          ├─────────────┤
-│ Application │◄─────────────────────────►│ Application │
-├─────────────┤                           ├─────────────┤
-│     KCP     │  ← 信頼性のあるUDP通信     │     KCP     │
-├─────────────┤                           ├─────────────┤
-│     UDP     │                           │     UDP     │
-└──────┬──────┘                           └──────┬──────┘
-       │                                         │
-       │    ┌─────────────────────────┐          │
-       │    │      MQTT Broker        │          │
-       └───►│  (シグナリング/STUN情報) │◄─────────┘
-            └─────────────────────────┘
-                       ▲
-            ┌──────────┴──────────┐
-            │    STUN Server      │
-            │ (グローバルIP取得)   │
-            └─────────────────────┘
-```
+Supported NAT Types:
+- **Full Cone NAT**: Fully supported
+- **Restricted Cone NAT**: Supported
+- **Port Restricted Cone NAT**: Supported
+- **Symmetric NAT**: Not supported (requires TURN)
 
-### なぜ KCP なのか
+Most home routers and mobile carriers use Cone-type NAT, making STUN connections possible.
 
-**問題**: TCPは信頼性が高いが、パケットロス時にHead-of-Line Blocking（後続パケットの待機）が発生し、遅延が急増する。純粋なUDPは低遅延だが、パケットロスや順序逆転に対応できない。
+### Why MQTT?
 
-**解決策**: KCP (KCP Protocol) はUDP上に構築された高速で信頼性のあるプロトコル。
+**Problem**: Before establishing P2P connection, address information must be exchanged (signaling). HTTP polling has high latency, WebSocket requires a persistent server.
 
-| 特性 | TCP | UDP | KCP |
-|------|-----|-----|-----|
-| 信頼性 | ○ | × | ○ |
-| 順序保証 | ○ | × | ○ |
-| 低遅延 | △ | ○ | ○ |
-| パケットロス耐性 | △ (遅延増) | × | ○ (即座に再送) |
+**Solution**: MQTT (Message Queuing Telemetry Transport) Pub/Sub model for signaling.
 
-KCPの特徴:
-- **即座の再送**: RTOを待たずにfast retransmit
-- **選択的再送**: 失われたパケットのみ再送 (SACKライク)
-- **遅延ACK無効化**: 低遅延優先の設計
-- **設定可能なウィンドウ**: ネットワーク状況に応じて調整可能
+MQTT Benefits:
+- **Lightweight**: Works on embedded devices like ESP32
+- **Real-time**: Immediate message delivery via Pub/Sub
+- **Existing Infrastructure**: Public brokers available (test.mosquitto.org, etc.)
+- **QoS Support**: Guaranteed message delivery
+- **Last Will**: Disconnection detection
 
-パケットロスがあっても即座に再送されるため、キーイングの欠落を最小限に抑えられます。
+## Crate Structure
 
-### なぜ STUN なのか
+| Crate | Description |
+|-------|-------------|
+| `wifikey` | ESP32 client firmware (paddle input) |
+| `wifikey-esp32-server` | ESP32 server firmware (PC-less rig control) |
+| `wifikey-server` | Desktop GUI application (**Tauri 2.x**) |
+| `wksocket` | KCP-based communication library |
+| `mqttstunclient` | MQTT + STUN client |
 
-**問題**: 家庭のルーターはNAT (Network Address Translation) を使用しており、外部から直接接続できない。ポート開放は設定が煩雑で、二重NATやCGN環境では不可能な場合もある。
+## Hardware
 
-**解決策**: STUN (Session Traversal Utilities for NAT) でグローバルアドレスを取得し、UDPホールパンチングでNATを越える。
+### Supported Boards
 
-```
-1. ESP32 → STUNサーバー: "私のグローバルアドレスは?"
-2. STUNサーバー → ESP32: "203.0.113.10:54321 です"
-3. 同様にPC側もSTUNで自身のアドレスを取得
-4. 互いのアドレスをMQTT経由で交換
-5. 両者が相手のアドレスにUDPパケットを送信 (ホールパンチング)
-6. NATに穴が開き、P2P通信が確立
-```
+| Board | Features |
+|-------|----------|
+| M5Atom Lite | Compact, built-in serial LED (WS2812), ATOMIC Proto Kit |
+| ESP32-WROVER | General purpose, breadboard configuration |
+| Other ESP32 | Generic default settings |
 
-対応NAT種別:
-- **Full Cone NAT**: 完全対応
-- **Restricted Cone NAT**: 対応
-- **Port Restricted Cone NAT**: 対応
-- **Symmetric NAT**: 非対応 (TURNが必要)
+### GPIO Configuration
 
-多くの家庭用ルーターやモバイルキャリアはCone系NATのため、STUNで接続可能です。
+Default GPIO assignments per board. Configurable via Web UI or AT commands.
 
-### なぜ MQTT なのか
+#### wifikey (Client)
 
-**問題**: P2P接続を確立する前に、互いのアドレス情報を交換する必要がある（シグナリング）。HTTPポーリングは遅延が大きく、WebSocketは常時接続のサーバーが必要。
-
-**解決策**: MQTT (Message Queuing Telemetry Transport) を使用したPub/Subモデルでシグナリング。
-
-MQTTの利点:
-- **軽量**: ESP32のような組み込み機器でも動作
-- **リアルタイム**: Pub/Subで即座にメッセージ配信
-- **既存インフラ活用**: パブリックブローカー (test.mosquitto.org等) を利用可能
-- **QoS対応**: 重要なメッセージの到達を保証
-- **Last Will**: 切断検知が可能
-
-シグナリングフロー:
-```
-ESP32                    MQTT Broker                    PC
-  │                           │                          │
-  ├──SUBSCRIBE: server/xxx────►                          │
-  │                           ◄───SUBSCRIBE: client/xxx──┤
-  │                           │                          │
-  ├──PUBLISH: client/xxx ─────►                          │
-  │  {local_ip, stun_ip}      ├─────────────────────────►│
-  │                           │                          │
-  │                           ◄──PUBLISH: server/xxx ────┤
-  │◄──────────────────────────┤   {local_ip, stun_ip}    │
-  │                           │                          │
-  ╔═══════════════════════════╧══════════════════════════╗
-  ║         UDP Hole Punching → KCP Session              ║
-  ╚══════════════════════════════════════════════════════╝
-```
-
-### 同一LAN最適化
-
-ESP32とPCが同一LAN内にある場合:
-- ローカルIPアドレスで直接通信
-- STUNアドレスよりローカルアドレスを優先
-- インターネット経由なしで最小遅延
-
-両方のアドレス候補に同時にパケットを送り、最初に応答があった経路を使用します。
-
-## アーキテクチャ
-
-### PC経由の構成 (wifikey-server)
-
-```
-┌─────────────────┐     MQTT/STUN      ┌─────────────────┐
-│  wifikey        │◄──────────────────►│  wifikey-server │
-│  (ESP32)        │     KCP (UDP)      │  (PC)           │
-│                 │                    │                 │
-│  - パドル入力   │                    │  - リグ制御     │
-│  - LED表示      │                    │  - キーイング   │
-└─────────────────┘                    │  - GUI (Tauri)  │
-                                       └────────┬────────┘
-                                                │ Serial
-                                       ┌────────▼────────┐
-                                       │  Transceiver    │
-                                       │  (無線機)       │
-                                       └─────────────────┘
-```
-
-### PC不要の構成 (wifikey-esp32-server)
-
-```
-┌─────────────────┐     MQTT/STUN      ┌─────────────────┐
-│  wifikey        │◄──────────────────►│wifikey-esp32-   │
-│  (ESP32 Client) │     KCP (UDP)      │server (ESP32)   │
-│                 │                    │                 │
-│  - パドル入力   │                    │  - GPIO出力     │
-│  - LED表示      │                    │  - キーイング   │
-└─────────────────┘                    └────────┬────────┘
-                                                │ Photocoupler
-                                       ┌────────▼────────┐
-                                       │  Transceiver    │
-                                       │  (無線機)       │
-                                       └─────────────────┘
-```
-
-wifikey-esp32-serverを使用すると、PCなしでリモートキーイングが可能です。ESP32サーバーがGPIO出力でフォトカプラを駆動し、無線機をキーイングします。
-
-## ハードウェア
-
-### 対応ボード
-
-| ボード | 特徴 |
-|--------|------|
-| M5Atom Lite | 小型、内蔵シリアルLED (WS2812)、ATOMIC Proto Kit使用 |
-| ESP32-WROVER | 汎用、ブレッドボード構成 |
-| その他ESP32 | 汎用デフォルト設定 |
-
-### GPIO設定
-
-各ボードのデフォルトGPIO設定は以下の通りです。Web設定画面またはATコマンドで変更可能です。
-
-#### wifikey (クライアント)
-
-| ボード | KEY_INPUT | BUTTON | LED |
-|--------|-----------|--------|-----|
-| M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (シリアルLED) |
+| Board | KEY_INPUT | BUTTON | LED |
+|-------|-----------|--------|-----|
+| M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (Serial LED) |
 | ESP32-WROVER | GPIO4 | GPIO12 | GPIO16 |
-| その他 | GPIO4 | GPIO0 | GPIO2 |
+| Other | GPIO4 | GPIO0 | GPIO2 |
 
-- **KEY_INPUT**: パドル/ストレートキー入力 (内部プルアップ、フォトカプラ経由)
-- **BUTTON**: ATU起動 / APモード切替ボタン (内部プルアップ)
-- **LED**: 状態表示LED
+- **KEY_INPUT**: Paddle/straight key input (internal pull-up, via photocoupler)
+- **BUTTON**: ATU trigger / AP mode switch (internal pull-up)
+- **LED**: Status indicator
 
-#### wifikey-esp32-server (サーバー)
+#### wifikey-esp32-server (Server)
 
-| ボード | KEY_OUTPUT | BUTTON | LED |
-|--------|------------|--------|-----|
-| M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (シリアルLED) |
+| Board | KEY_OUTPUT | BUTTON | LED |
+|-------|------------|--------|-----|
+| M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (Serial LED) |
 | ESP32-WROVER | GPIO4 | GPIO12 | GPIO16 |
-| その他 | GPIO4 | GPIO0 | GPIO2 |
+| Other | GPIO4 | GPIO0 | GPIO2 |
 
-- **KEY_OUTPUT**: キーイング出力 (フォトカプラへ、Activeで送信)
-- **BUTTON**: APモード切替ボタン (内部プルアップ)
-- **LED**: 状態表示LED
+- **KEY_OUTPUT**: Keying output (to photocoupler, active = transmit)
+- **BUTTON**: AP mode switch (internal pull-up)
+- **LED**: Status indicator
 
-### LED制御の違い
+### Circuit Design
 
-| ボード | LED種類 | 制御方式 |
-|--------|---------|----------|
-| M5Atom Lite | 内蔵WS2812 (シリアルLED) | RMTペリフェラル、GPIO27固定 |
-| その他 | 通常LED | GPIO出力、設定で変更可能 |
+For detailed schematics and parts list, see [WiFiKey (previous version)](https://github.com/jl1nie/WiFiKey).
 
-M5Atom以外のボードでシリアルLED (WS2812等) を使用する場合は、`wifikey/src/main.rs` の以下の箇所を変更してください:
+Basic configuration:
+- Photocoupler (PC817, etc.) for key input isolation
+- 100Ω current limiting resistor
+- GPIO input uses internal pull-up
 
-```rust
-// 85行目付近: M5Atom用のシリアルLED初期化
-#[cfg(feature = "board_m5atom")]
-let mut serial_led =
-    Ws2812Esp32Rmt::new(peripherals.rmt.channel0, peripherals.pins.gpio27).unwrap();
-
-// 97行目付近: 通常LED初期化 (この部分をシリアルLED用に変更)
-#[cfg(not(feature = "board_m5atom"))]
-let led_pin = unsafe { pin_from_num(gpio_config.led as i32) };
-#[cfg(not(feature = "board_m5atom"))]
-let mut led = PinDriver::output(led_pin)?;
-```
-
-### 回路構成
-
-詳細な回路図・部品リストについては [WiFiKey (旧バージョン)](https://github.com/jl1nie/WiFiKey) を参照してください。
-
-基本構成:
-- フォトカプラ (PC817等) によるキー入力の絶縁
-- 100Ω電流制限抵抗
-- GPIO入力は内部プルアップを使用
-
-## クレート構成
-
-| クレート | 説明 |
-|----------|------|
-| `wifikey` | ESP32クライアント (パドル入力送信) |
-| `wifikey-esp32-server` | ESP32サーバー (PC不要でリグ制御) |
-| `wifikey-server` | デスクトップGUIアプリ (**Tauri 2.x**) |
-| `wksocket` | KCPベースの通信ライブラリ |
-| `mqttstunclient` | MQTT + STUNクライアント |
-
-## 必要環境
+## Requirements
 
 ### wifikey (ESP32)
 - Rust 1.71+
 - ESP-IDF v5.2.2
 - espflash
-- **推奨: WSL2でビルド** (Windowsパス長制限回避)
+- **Recommended: Build on WSL2** (avoids Windows path length limits)
 
 ### wifikey-server (PC)
 - Rust 1.71+
-- Node.js 18+ (Tauri用)
-- シリアルポート対応OS (Windows / Linux / macOS)
+- Node.js 18+ (for Tauri)
+- Serial port support (Windows / Linux / macOS)
 
-#### プラットフォーム別要件
+#### Platform-specific Requirements
 
-| OS | 追加要件 |
-|----|----------|
-| Windows | WebView2 (自動インストール) |
+| OS | Additional Requirements |
+|----|------------------------|
+| Windows | WebView2 (auto-installed) |
 | Linux | `libwebkit2gtk-4.1`, `libgtk-3` |
 | macOS | Xcode Command Line Tools |
 
-## ビルド
+## Build
 
-本プロジェクトは `cargo-make` をタスクランナーとして使用します。
+This project uses `cargo-make` as task runner.
 
 ```bash
-# cargo-make インストール
+# Install cargo-make
 cargo install cargo-make
 ```
 
-### タスク一覧
+### Task List
 
-| タスク | 説明 |
-|--------|------|
-| `cargo make esp-build` | ESP32クライアントビルド (debug) |
-| `cargo make esp-build-release` | ESP32クライアントビルド (release) |
-| `cargo make esp-image` | クライアント用バイナリ作成 (`wifikey/wifikey.bin`) |
-| `cargo make esp-flash` | ESP32クライアントにフラッシュ |
-| `cargo make esp-server-build` | ESP32サーバービルド (debug) |
-| `cargo make esp-server-build-release` | ESP32サーバービルド (release) |
-| `cargo make esp-server-image` | サーバー用バイナリ作成 |
-| `cargo make esp-server-flash` | ESP32サーバーにフラッシュ |
-| `cargo make esp-monitor` | シリアルモニタ |
-| `cargo make esp-erase` | ESP32フラッシュ消去 |
-| `cargo make esp-clippy` | ESP32クライアント clippy |
-| `cargo make esp-server-clippy` | ESP32サーバー clippy |
-| `cargo make esp-fmt` | ESP32クライアントフォーマット |
-| `cargo make esp-server-fmt` | ESP32サーバーフォーマット |
-| `cargo make pc-build` | PCクレートビルド (debug) |
-| `cargo make pc-build-release` | PCクレートビルド (release) |
+| Task | Description |
+|------|-------------|
+| `cargo make esp-build` | Build ESP32 client (debug) |
+| `cargo make esp-build-release` | Build ESP32 client (release) |
+| `cargo make esp-image` | Create client binary (`wifikey/wifikey.bin`) |
+| `cargo make esp-flash` | Flash ESP32 client |
+| `cargo make esp-server-build` | Build ESP32 server (debug) |
+| `cargo make esp-server-build-release` | Build ESP32 server (release) |
+| `cargo make esp-server-image` | Create server binary |
+| `cargo make esp-server-flash` | Flash ESP32 server |
+| `cargo make esp-monitor` | Serial monitor |
+| `cargo make esp-erase` | Erase ESP32 flash |
+| `cargo make esp-clippy` | ESP32 client clippy |
+| `cargo make esp-server-clippy` | ESP32 server clippy |
+| `cargo make esp-fmt` | Format ESP32 client |
+| `cargo make esp-server-fmt` | Format ESP32 server |
+| `cargo make pc-build` | Build PC crates (debug) |
+| `cargo make pc-build-release` | Build PC crates (release) |
 | `cargo make pc-clippy` | PC clippy |
-| `cargo make pc-fmt` | PCフォーマット |
-| `cargo make server` | wifikey-server 起動 |
-| `cargo make check` | 全クレートのfmt/clippyチェック |
+| `cargo make pc-fmt` | Format PC crates |
+| `cargo make server` | Run wifikey-server |
+| `cargo make check` | Format/clippy check all crates |
 
-### デスクトップアプリ (Tauri)
+### Desktop App (Tauri)
 
 ```bash
 cd wifikey-server
 
-# 依存関係インストール
+# Install dependencies
 npm install
 
-# 開発モード
+# Development mode
 npm run tauri:dev
 
-# リリースビルド
+# Release build
 npm run tauri:build
 ```
 
-ビルド成果物:
+Build outputs:
 - **Windows**: `src-tauri/target/release/wifikey-server.exe`
 - **Linux**: `src-tauri/target/release/bundle/` (.deb, .AppImage)
 - **macOS**: `src-tauri/target/release/bundle/` (.app, .dmg)
 
-### ESP32ファームウェア
+### ESP32 Firmware
 
 ```bash
-# ビルド
+# Build
 cargo make esp-build-release
 
-# バイナリ作成 (wifikey/wifikey.bin)
+# Create binary (wifikey/wifikey.bin)
 cargo make esp-image
 
-# フラッシュ＆モニタ
+# Flash & monitor
 cargo make esp-flash
 ```
 
-手動ビルドの場合:
+Manual build:
 ```bash
 cd wifikey
 cargo build --release
 
-# フラッシュ (Windowsから)
+# Flash (from Windows)
 espflash flash ../target/xtensa-esp32-espidf/release/wifikey --monitor
 ```
 
-## 設定
+## Configuration
 
 ### wifikey-server
 
-`cfg.toml` を作成 (`cfg-sample.toml` を参考):
+Create `cfg.toml` (reference `cfg-sample.toml`):
 
 ```toml
 server_name = "your-server-name"
 server_password = "your-password"
-rigcontrol_port = "COM3"      # Windows例 (Linux: /dev/ttyUSB0)
+rigcontrol_port = "COM3"      # Windows (Linux: /dev/ttyUSB0)
 keying_port = "COM4"
 use_rts_for_keying = true
 ```
 
-**GUI設定**: アプリ内の設定画面からも変更可能
+**GUI Settings**: Also configurable via in-app settings
 
-### wifikey (ESP32) 初期設定
+### wifikey (ESP32 Client) Initial Setup
 
-ESP32クライアントは以下の3つの方法で設定できます。
+Three methods available:
 
-#### 方法1: APモード + Web設定画面 (推奨)
+#### Method 1: AP Mode + Web UI (Recommended)
 
-PCやスマートフォンのブラウザから設定できます。
+Configure via smartphone or PC browser.
 
-1. **APモードに入る**
-   - **初回起動時**: プロファイル未設定のため自動的にAPモードで起動
-   - **設定済みの場合**: 起動時にボタンを **5秒間長押し** してAPモードに入る
-   - APモード中はLEDが **青色** に点灯
+1. **Enter AP Mode**
+   - **First boot**: Automatically enters AP mode (no profiles configured)
+   - **With profiles**: Hold button for **5 seconds** at startup
+   - LED turns **blue** in AP mode
 
-2. **WiFiに接続**
-   - スマートフォンまたはPCで `WifiKey-XXXXXX` (XXXXXXはMACアドレス末尾) に接続
-   - パスワードなし (オープンネットワーク)
+2. **Connect to WiFi**
+   - Connect to `WifiKey-XXXXXX` (XXXXXX = MAC address suffix)
+   - No password (open network)
 
-3. **設定画面を開く**
-   - ブラウザで `http://192.168.4.1` にアクセス
+3. **Open Settings**
+   - Navigate to `http://192.168.4.1`
 
-4. **プロファイルを追加**
-   - WiFi SSID / パスワード
-   - サーバー名 / パスワード
-   - 「Add Profile」をクリック
+4. **Add Profile**
+   - WiFi SSID / password
+   - Server name / password
+   - Click "Add Profile"
 
-5. **再起動**
-   - 「Save & Restart」をクリック
-   - ESP32が再起動し、設定したWiFiに接続
+5. **Restart**
+   - Click "Save & Restart"
+   - ESP32 restarts and connects to configured WiFi
 
-#### 方法2: サーバーアプリからUSBシリアル経由で設定
+#### Method 2: USB Serial via Server App
 
-wifikey-serverアプリからESP32をUSB接続で設定できます。
+Configure ESP32 via USB from wifikey-server app.
 
-1. ESP32をUSBでPCに接続
-2. wifikey-serverを起動
-3. **📡ボタン** (ESP32 Config) をクリック
-4. シリアルポートを選択して「Connect」
-5. プロファイルを追加・削除
-6. 「Restart ESP32」で反映
+1. Connect ESP32 via USB
+2. Launch wifikey-server
+3. Click **📡 button** (ESP32 Config)
+4. Select serial port and "Connect"
+5. Add/delete profiles
+6. "Restart ESP32" to apply
 
-#### 方法3: シリアルターミナルからATコマンド
+#### Method 3: AT Commands via Serial Terminal
 
-シリアルターミナル (115200bps) から直接ATコマンドで設定できます。
+Direct AT commands via serial terminal (115200bps).
 
 ```
-AT              # 接続テスト → OK
-AT+HELP         # コマンド一覧表示
-AT+LIST         # 保存済みプロファイル一覧
-AT+ADD=SSID,WiFiPass,ServerName,ServerPass  # プロファイル追加
-AT+DEL=0        # プロファイル0を削除
-AT+CLEAR        # 全プロファイル削除
-AT+INFO         # デバイス情報表示
-AT+RESTART      # 再起動
+AT              # Connection test → OK
+AT+HELP         # Show command list
+AT+LIST         # Show saved profiles
+AT+ADD=SSID,WiFiPass,ServerName,ServerPass  # Add profile
+AT+DEL=0        # Delete profile 0
+AT+CLEAR        # Delete all profiles
+AT+INFO         # Show device info
+AT+RESTART      # Restart
 ```
 
-**例: プロファイル追加**
+**Example: Add profile**
 ```
 AT+ADD=MyWiFi,wifipassword,JA1XXX/keyer1,serverpassword
 ```
 
-#### 複数プロファイル
+#### Multiple Profiles
 
-- 最大8個のプロファイルを保存可能
-- 起動時に周囲のWiFiをスキャンし、登録済みSSIDに自動接続
-- 対応するサーバー設定も自動選択
+- Up to 8 profiles can be saved
+- On startup, scans for nearby WiFi and auto-connects to registered SSIDs
+- Corresponding server settings are auto-selected
 
-#### LED表示
+#### LED Indicators
 
-| 色 | 状態 |
-|----|------|
-| 赤 | 起動中 / キーイング中 |
-| 青 | APモード (設定待ち) |
-| 消灯 | 通常動作中 |
+| Color | State |
+|-------|-------|
+| Red | Starting / Keying |
+| Blue | AP Mode (awaiting config) |
+| Off | Normal operation |
 
-#### 従来の方法: cfg.toml (ビルド時埋め込み)
+## ESP32 Server (PC-less Operation)
 
-開発者向け。ビルド時に設定を埋め込む方法です。
+wifikey-esp32-server enables remote keying without a PC.
 
-`cfg.toml` を作成:
+### ESP32 Server Setup
 
-```toml
-[wifikey]
-wifi_ssid = "YOUR_SSID"
-wifi_passwd = "YOUR_PASSWORD"
-server_name = "your-server-name"
-server_password = "your-password"
-```
+Same configuration methods as client (AP Mode + Web UI or AT commands).
 
-この方法は設定変更のたびに再ビルド・再フラッシュが必要です。
+1. Start ESP32 server (enters AP mode on first boot)
+2. Connect to `WkServer-XXXXXX` WiFi
+3. Open `http://192.168.4.1`
+4. Configure:
+   - WiFi SSID / password
+   - Server name (your identifier, e.g., `JA1XXX/keyer`)
+   - Connection password (clients use this to connect)
 
-## 使い方
+### ESP32 Server AT Commands
 
-### 基本的な使用手順
-
-1. **wifikey-server (PC) を起動**
-   - サーバー名とパスワードを設定
-   - キーイング用シリアルポートを選択
-   - 無線機を接続
-
-2. **ESP32を起動**
-   - 設定済みのWiFiに自動接続
-   - サーバーに自動接続 (タイトルが赤くなれば接続成功)
-
-3. **パドル操作**
-   - ESP32に接続したパドルを操作
-   - リアルタイムで無線機がキーイング
-
-### ボタン操作 (ESP32)
-
-| 操作 | 動作 |
-|------|------|
-| 短押し | ATUスタート (アンテナチューナー起動) |
-| 5秒長押し (起動時) | APモードに移行 (設定変更) |
-
-### サーバーアプリ操作
-
-| ボタン | 動作 |
-|--------|------|
-| ⚙️ | サーバー設定 (名前、パスワード、ポート) |
-| 📡 | ESP32設定 (USBシリアル経由) |
-| Start ATU | ATU起動コマンド送信 |
-
-### パフォーマンスダッシュボード
-
-サーバーアプリには以下の統計情報がリアルタイム表示されます:
-
-| 項目 | 説明 |
-|------|------|
-| WPM | 送信速度 (PARIS基準、ドット長から計算) |
-| pkt/s | パケットレート |
-| RTT | 推定ラウンドトリップ時間 (ms) |
-
-## ESP32サーバー (PC不要運用)
-
-wifikey-esp32-serverを使用すると、PCなしでリモートキーイングが可能です。
-
-### ESP32サーバーの設定
-
-設定方法はクライアントと同様です (APモード + Web設定画面 または ATコマンド)。
-
-1. ESP32サーバーを起動 (初回はAPモード)
-2. `WkServer-XXXXXX` WiFiに接続
-3. `http://192.168.4.1` で設定画面を開く
-4. 以下を設定:
-   - WiFi SSID / パスワード
-   - サーバー名 (自分の識別子、例: `JA1XXX/keyer`)
-   - 接続パスワード (クライアントがこのパスワードで接続)
-
-### ESP32サーバーのATコマンド
-
-クライアントと同じコマンドが使用可能ですが、GPIO表示が異なります:
+Same commands as client, but GPIO display differs:
 
 ```
-AT+GPIO     # GPIO設定表示 (KEY_OUTPUT, BUTTON, LED)
-AT+GPIO=19,39,27  # GPIO設定変更
+AT+GPIO     # Show GPIO settings (KEY_OUTPUT, BUTTON, LED)
+AT+GPIO=19,39,27  # Change GPIO settings
 ```
 
-### ESP32サーバービルド
+### ESP32 Server Build
 
 ```bash
-# ビルド
+# Build
 cargo make esp-server-build-release
 
-# フラッシュ
+# Flash
 cargo make esp-server-flash
 ```
 
-## 機能
+## Usage
 
-- **リモートキーイング**: パドル操作をリアルタイム伝送
-- **NAT traversal**: MQTT + STUNによる接続確立
-- **同一LAN対応**: ローカルIP優先で低遅延接続
-- **暗号化**: ChaCha20-Poly1305による通信暗号化
-- **ATU制御**: アンテナチューナー起動機能
-- **リグ制御**: CAT経由での周波数/モード制御
-- **設定GUI**: シリアルポート選択・設定保存 (Tauri版)
-- **ESP32簡単設定**: APモード/Web画面またはUSBシリアルで設定
-- **PC不要運用**: ESP32サーバーによるスタンドアロン動作
-- **パフォーマンスダッシュボード**: WPM、RTT、パケットレート表示
+### Basic Steps
+
+1. **Start wifikey-server (PC)**
+   - Configure server name and password
+   - Select keying serial port
+   - Connect transceiver
+
+2. **Start ESP32**
+   - Auto-connects to configured WiFi
+   - Auto-connects to server (title turns red when connected)
+
+3. **Operate Paddle**
+   - Operate paddle connected to ESP32
+   - Transceiver keys in real-time
+
+### Button Operations (ESP32)
+
+| Action | Function |
+|--------|----------|
+| Short press | Start ATU (Antenna Tuner) |
+| 5s long press (at startup) | Enter AP mode (change settings) |
+
+### Server App Controls
+
+| Button | Function |
+|--------|----------|
+| ⚙️ | Server settings (name, password, ports) |
+| 📡 | ESP32 config (via USB serial) |
+| Start ATU | Send ATU start command |
+
+### Performance Dashboard
+
+The server app displays real-time statistics:
+
+| Item | Description |
+|------|-------------|
+| WPM | Sending speed (PARIS standard, calculated from dot length) |
+| pkt/s | Packet rate |
+| RTT | Estimated round-trip time (ms) |
+
+## Features
+
+- **Remote Keying**: Real-time paddle operation transmission
+- **NAT Traversal**: Connection via MQTT + STUN
+- **Same LAN Support**: Local IP priority for low latency
+- **Encryption**: ChaCha20-Poly1305 encrypted communication
+- **ATU Control**: Antenna tuner activation
+- **Rig Control**: Frequency/mode control via CAT
+- **GUI Settings**: Serial port selection and settings (Tauri version)
+- **Easy ESP32 Setup**: AP mode/Web UI or USB serial configuration
+- **PC-less Operation**: Standalone operation with ESP32 server
+- **Performance Dashboard**: WPM, RTT, packet rate display
 
 ## NAT Traversal
 
-本システムはICE-likeな接続確立方式を採用しています。
+This system uses an ICE-like connection establishment method.
 
-### 対応環境
+### Supported Environments
 
-| 環境 | 対応状況 |
-|------|----------|
-| 同一LAN内 | ✓ ローカルIPで直接接続 |
-| 家庭用ルーター (Cone NAT) | ✓ STUNでホールパンチング |
-| モバイルキャリア (多くの場合) | ✓ STUNでホールパンチング |
-| Symmetric NAT | ✗ 非対応 (TURN必要) |
+| Environment | Support |
+|-------------|---------|
+| Same LAN | ✓ Direct connection via local IP |
+| Home router (Cone NAT) | ✓ STUN hole punching |
+| Mobile carrier (most) | ✓ STUN hole punching |
+| Symmetric NAT | ✗ Not supported (requires TURN) |
 
-### 接続フロー
+### Connection Flow
 
 ```
-1. ESP32/PC が MQTT ブローカーに接続
-2. STUN で自身のグローバルIP:ポートを取得
-3. ローカルIP と STUNアドレス の両方を MQTT で交換
-4. 両方のアドレスに UDP パンチングパケットを送信
-5. 最初に応答があったアドレスで KCP 通信を開始
+1. ESP32/PC connect to MQTT broker
+2. Obtain global IP:port via STUN
+3. Exchange both local IP and STUN addresses via MQTT
+4. Send UDP punching packets to both addresses
+5. Start KCP communication on first responding address
 ```
 
-### 同一LAN内での動作
+### Same LAN Operation
 
-ESP32とPCが同じLAN内にある場合、ローカルIPが優先されるため：
-- インターネット経由なしで接続
-- 最小遅延でキーイング可能
-- ルーターのヘアピンNAT非対応でも動作
+When ESP32 and PC are on the same LAN, local IP is prioritized:
+- No internet routing required
+- Minimum latency keying
+- Works even without router hairpin NAT support
 
-## 開発環境
+## Development Environment
 
-### 推奨構成
+### Recommended Setup
 
-| コンポーネント | 開発 | ビルド |
-|---------------|------|--------|
+| Component | Development | Build |
+|-----------|-------------|-------|
 | wifikey (ESP32) | WSL2 | WSL2 |
 | wifikey-server (Windows) | WSL2 or Windows | Windows (msvc) |
 | wifikey-server (Linux) | WSL2 | WSL2 |
 
-### ESP32開発 (WSL2)
+### ESP32 Development (WSL2)
 
 ```bash
-# espupインストール
+# Install espup
 cargo install espup
 espup install
 
-# 環境変数設定
+# Set environment variables
 source ~/export-esp.sh
 
-# ビルド
+# Build
 cargo build -p wifikey --release
 ```
 
-フラッシュはWindows側から実行:
+Flash from Windows:
 ```powershell
 espflash flash \\wsl$\Ubuntu\home\user\src\wifikey2\target\xtensa-esp32-espidf\release\wifikey
 ```
 
-### Git Hooks セットアップ
+### Git Hooks Setup
 
-リポジトリをクローン後、以下を実行してpre-commitフックを有効化:
+After cloning, run the following to enable pre-commit hooks:
 
 ```bash
 ./scripts/setup-hooks.sh
 ```
 
-Pre-commitフックは以下をチェックします:
-- `cargo fmt --check` (全クレート)
-- `cargo clippy` (PC/ESP32クレート)
+Pre-commit hooks check:
+- `cargo fmt --check` (all crates)
+- `cargo clippy` (PC/ESP32 crates)
 
-## ライセンス
+## License
 
-[LICENSE](LICENSE) を参照
+See [LICENSE](LICENSE)
 
-## 作者
+## Author
 
 Minoru Tomobe <minoru.tomobe@gmail.com>
