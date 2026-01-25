@@ -10,7 +10,7 @@ use std::sync::{
 use std::thread;
 use wksocket::{sleep, tick_count, MessageRCV, WkReceiver};
 
-pub const MAX_ASSERT_DURAION: u32 = 5000;
+pub const MAX_ASSERT_DURATION: u32 = 10000;
 pub const MSPERWPM: u32 = 1200; /* PARIS = 50 tick */
 
 #[allow(dead_code)]
@@ -285,7 +285,7 @@ impl RemoteKeyer {
                 break;
             }
             let asserted = asserted_wdg.load(Ordering::Relaxed);
-            if asserted != 0 && tick_count() - asserted > MAX_ASSERT_DURAION {
+            if asserted != 0 && tick_count() - asserted > MAX_ASSERT_DURATION {
                 rigcon_wdg.assert_key(false);
                 asserted_wdg.store(0, Ordering::Relaxed);
             }
