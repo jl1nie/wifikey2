@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 use tokio::sync::Mutex;
 
 mod commands;
@@ -265,6 +265,18 @@ fn init_server(
 }
 
 fn main() {
+    // Set up panic hook to write to log file before crashing
+    let default_panic = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = format!("PANIC: {}", info);
+        // Try to write to a crash log next to executable
+        if let Ok(exe) = std::env::current_exe() {
+            let crash_log = exe.with_file_name("wifikey2-crash.log");
+            let _ = std::fs::write(&crash_log, &msg);
+        }
+        default_panic(info);
+    }));
+
     // Load configuration
     let config = AppConfig::load().unwrap_or_else(|e| {
         eprintln!("Failed to load config: {}, using defaults", e);
@@ -274,18 +286,13 @@ fn main() {
     // Initialize remote stats
     let remote_stats = Arc::new(RemoteStats::default());
 
-    // Initialize server
-    let server = match init_server(&config, remote_stats.clone()) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            eprintln!("Failed to initialize server: {}", e);
-            None
-        }
-    };
+    // Defer server initialization to after Tauri setup so errors are logged
+    let init_config = config.clone();
+    let init_stats = remote_stats.clone();
 
-    // Create application state
+    // Create application state (server starts as None, initialized in setup)
     let app_state = AppState {
-        server: Arc::new(Mutex::new(server)),
+        server: Arc::new(Mutex::new(None)),
         remote_stats,
         config: Arc::new(Mutex::new(config)),
     };
@@ -311,8 +318,28 @@ fn main() {
             esp32_restart,
             esp32_info,
         ])
-        .setup(|_app| {
-            log::info!("WiFiKey2 server started");
+        .setup(move |app| {
+            log::info!("WiFiKey2 starting...");
+            log::info!("Config: server_name={}, rigcontrol={}, keying={}",
+                init_config.server_name, init_config.rigcontrol_port, init_config.keying_port);
+
+            // Initialize server now that logging is active
+            let state: State<'_, AppState> = app.state();
+            match init_server(&init_config, init_stats) {
+                Ok(s) => {
+                    log::info!("Server initialized successfully");
+                    let server = state.server.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mut guard = server.lock().await;
+                        *guard = Some(s);
+                    });
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize server: {}", e);
+                    log::error!("Check serial port settings in cfg.toml");
+                }
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
