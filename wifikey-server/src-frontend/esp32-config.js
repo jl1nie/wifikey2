@@ -1,6 +1,6 @@
 // WiFiKey2 ESP32 Configuration Module
 
-const { invoke } = window.__TAURI__.core;
+import { invoke, addLogEntry } from './main.js';
 
 // DOM Elements (will be set after modal is added)
 let esp32Modal;
@@ -143,7 +143,7 @@ function closeEsp32Modal() {
 async function refreshPorts() {
     try {
         const ports = await invoke('get_serial_ports');
-        
+
         // Clear and repopulate
         esp32PortSelect.innerHTML = '<option value="">Select port...</option>';
         ports.forEach(port => {
@@ -159,14 +159,14 @@ async function refreshPorts() {
         }
     } catch (error) {
         console.error('Failed to get ports:', error);
-        showEsp32Error(`Failed to get ports: ${error}`);
+        addLogEntry(`Failed to get ports: ${error}`, 'error');
     }
 }
 
 async function connectToDevice() {
     const port = esp32PortSelect.value;
     if (!port) {
-        showEsp32Error('Please select a port');
+        addLogEntry('Please select a port', 'error');
         return;
     }
 
@@ -190,7 +190,7 @@ async function connectToDevice() {
 
     } catch (error) {
         console.error('Failed to connect:', error);
-        showEsp32Error(`Failed to connect: ${error}`);
+        addLogEntry(`Failed to connect: ${error}`, 'error');
     } finally {
         connectBtn.disabled = false;
         connectBtn.textContent = 'Connect';
@@ -203,7 +203,7 @@ async function loadProfiles() {
         renderProfiles();
     } catch (error) {
         console.error('Failed to load profiles:', error);
-        showEsp32Error(`Failed to load profiles: ${error}`);
+        addLogEntry(`Failed to load profiles: ${error}`, 'error');
     }
 }
 
@@ -217,12 +217,32 @@ function renderProfiles() {
         <div class="profile-item">
             <div class="profile-info">
                 <span class="profile-ssid">${escapeHtml(p.ssid)}</span>
-                <span class="profile-arrow">→</span>
+                <span class="profile-arrow">&rarr;</span>
                 <span class="profile-server">${escapeHtml(p.server_name)}</span>
             </div>
-            <button class="btn btn-danger btn-small" onclick="deleteProfile(${p.index})">Delete</button>
+            <button class="btn btn-danger btn-small" data-profile-index="${p.index}">Delete</button>
         </div>
     `).join('');
+
+    // Attach delete handlers via event delegation
+    esp32ProfileList.querySelectorAll('[data-profile-index]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            deleteProfile(parseInt(btn.dataset.profileIndex, 10));
+        });
+    });
+}
+
+async function deleteProfile(index) {
+    if (!confirm('Delete this profile?')) return;
+
+    try {
+        await invoke('esp32_delete_profile', { port: selectedPort, index });
+        await loadProfiles();
+        addLogEntry('Profile deleted', 'info');
+    } catch (error) {
+        console.error('Failed to delete profile:', error);
+        addLogEntry(`Failed to delete profile: ${error}`, 'error');
+    }
 }
 
 async function addProfile(e) {
@@ -234,7 +254,7 @@ async function addProfile(e) {
     const serverPassword = document.getElementById('esp32-server-pass').value;
 
     if (!ssid || !serverName) {
-        showEsp32Error('SSID and Server Name are required');
+        addLogEntry('SSID and Server Name are required', 'error');
         return;
     }
 
@@ -257,57 +277,28 @@ async function addProfile(e) {
         // Reload profiles
         await loadProfiles();
 
-        showEsp32Success('Profile added');
+        addLogEntry('Profile added', 'info');
     } catch (error) {
         console.error('Failed to add profile:', error);
-        showEsp32Error(`Failed to add profile: ${error}`);
+        addLogEntry(`Failed to add profile: ${error}`, 'error');
     } finally {
         submitBtn.disabled = false;
         submitBtn.textContent = 'Add Profile';
     }
 }
 
-// Global function for delete button onclick
-window.deleteProfile = async function(index) {
-    if (!confirm('Delete this profile?')) return;
-
-    try {
-        await invoke('esp32_delete_profile', { port: selectedPort, index });
-        await loadProfiles();
-        showEsp32Success('Profile deleted');
-    } catch (error) {
-        console.error('Failed to delete profile:', error);
-        showEsp32Error(`Failed to delete profile: ${error}`);
-    }
-};
-
 async function restartDevice() {
     if (!confirm('Restart ESP32?')) return;
 
     try {
         await invoke('esp32_restart', { port: selectedPort });
-        showEsp32Success('Restart command sent');
-        
+        addLogEntry('Restart command sent', 'info');
+
         // Close modal after restart
         setTimeout(closeEsp32Modal, 1500);
     } catch (error) {
         console.error('Failed to restart:', error);
-        showEsp32Error(`Failed to restart: ${error}`);
-    }
-}
-
-function showEsp32Error(message) {
-    // Use main.js log if available, otherwise alert
-    if (typeof window.addLogEntry === 'function') {
-        window.addLogEntry(message, 'error');
-    } else {
-        alert(message);
-    }
-}
-
-function showEsp32Success(message) {
-    if (typeof window.addLogEntry === 'function') {
-        window.addLogEntry(message, 'info');
+        addLogEntry(`Failed to restart: ${error}`, 'error');
     }
 }
 
@@ -317,5 +308,5 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
-// Export for use from other modules
+// Export for use from main.js (via window for loose coupling)
 window.openEsp32Modal = openEsp32Modal;

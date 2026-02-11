@@ -1,6 +1,7 @@
 // WiFiKey2 Main Application JavaScript
 
 const { invoke } = window.__TAURI__.core;
+export { invoke };
 
 // DOM Elements
 const appTitle = document.getElementById('app-title');
@@ -27,13 +28,13 @@ document.addEventListener('DOMContentLoaded', () => {
 async function initializeApp() {
     // Setup event listeners
     setupEventListeners();
-    
+
     // Start periodic stats update
     startStatsUpdate();
-    
+
     // Setup log listener
     setupLogListener();
-    
+
     console.log('WiFiKey2 initialized');
 }
 
@@ -59,7 +60,7 @@ function setupEventListeners() {
 function startStatsUpdate() {
     // Update immediately
     updateStats();
-    
+
     // Then update every 500ms
     updateInterval = setInterval(updateStats, 500);
 }
@@ -67,23 +68,23 @@ function startStatsUpdate() {
 async function updateStats() {
     try {
         const stats = await invoke('get_session_stats');
-        
+
         // Update session info
         sessionStart.textContent = stats.session_start || '-';
         peerAddress.textContent = stats.peer_address || '-';
-        
+
         // Update statistics
         wpmValue.textContent = stats.wpm.toFixed(1);
         pktValue.textContent = stats.pkt_per_sec;
         rttValue.textContent = stats.rtt_ms;
-        
+
         // Update title color based on auth status
         if (stats.auth_ok) {
             appTitle.classList.add('active');
         } else {
             appTitle.classList.remove('active');
         }
-        
+
         // Update ATU button state
         if (stats.atu_active) {
             atuBtn.disabled = true;
@@ -102,9 +103,9 @@ async function handleStartATU() {
     try {
         atuBtn.disabled = true;
         atuBtn.textContent = 'Starting ATU...';
-        
+
         await invoke('start_atu');
-        
+
         addLogEntry('ATU started', 'info');
     } catch (error) {
         console.error('Failed to start ATU:', error);
@@ -115,7 +116,7 @@ async function handleStartATU() {
 // Log functions
 function toggleLog() {
     isLogCollapsed = !isLogCollapsed;
-    
+
     if (isLogCollapsed) {
         logContainer.classList.add('collapsed');
         logArrow.classList.add('collapsed');
@@ -125,7 +126,7 @@ function toggleLog() {
     }
 }
 
-function addLogEntry(message, level = 'info') {
+export function addLogEntry(message, level = 'info') {
     const entry = document.createElement('div');
     entry.className = `log-entry ${level}`;
 
@@ -143,9 +144,6 @@ function addLogEntry(message, level = 'info') {
     }
 }
 
-// Export for other modules
-window.addLogEntry = addLogEntry;
-
 function setupLogListener() {
     // Listen for log events from Tauri plugin-log
     if (window.__TAURI__?.event) {
@@ -154,7 +152,7 @@ function setupLogListener() {
             let logLevel = 'info';
             if (level >= 40) logLevel = 'error';
             else if (level >= 30) logLevel = 'warn';
-            
+
             addLogEntry(message, logLevel);
         });
     }
