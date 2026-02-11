@@ -47,21 +47,5 @@
       }
     }
   },
-  "plugins": {
-    "log": {
-      "level": "info",
-      "targets": [
-        {
-          "kind": "Stdout"
-        },
-        {
-          "kind": "LogDir",
-          "fileName": "wifikey2.log"
-        },
-        {
-          "kind": "Webview"
-        }
-      ]
-    }
-  }
+  "plugins": {}
 }

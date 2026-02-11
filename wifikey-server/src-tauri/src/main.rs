@@ -302,6 +302,9 @@ fn main() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
+                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("wifikey2.log".into()) }))
+                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview))
                 .build(),
         )
         .manage(app_state)
