@@ -119,20 +119,39 @@ if ($nvsValues.Count -eq 0) {
     exit 1
 }
 
-# Write NVS CSV
+# Encode WiFi profile as binary blob matching ConfigManager::WifiProfile::to_bytes()
+# Format: [ssid_len][ssid][pass_len][pass][sname_len][sname][spass_len][spass]
+function Encode-WifiProfile($ssid, $password, $serverName, $serverPassword) {
+    $buf = [System.Collections.Generic.List[byte]]::new()
+    foreach ($s in @($ssid, $password, $serverName, $serverPassword)) {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($s)
+        $buf.Add([byte]$bytes.Length)
+        $buf.AddRange($bytes)
+    }
+    return [Convert]::ToBase64String($buf.ToArray())
+}
+
+$ssid   = $nvsValues["wifi_ssid"]
+$passwd = $nvsValues["wifi_passwd"]
+$sname  = $nvsValues["server_name"]
+$spass  = $nvsValues["server_password"]
+
+if (-not $ssid -or -not $sname) {
+    Write-Host "[ERROR] wifi_ssid and server_name are required in cfg.toml" -ForegroundColor Red
+    exit 1
+}
+
+$profileBlob = Encode-WifiProfile $ssid $passwd $sname $spass
+
+# Write NVS CSV (ConfigManager format: count + prof0 blob)
 $csvLines = @(
     "key,type,encoding,value"
     "wifikey,namespace,,"
+    "count,data,u8,1"
+    "prof0,data,base64,$profileBlob"
 )
-foreach ($key in @("wifi_ssid", "wifi_passwd", "server_name", "server_password")) {
-    if ($nvsValues.ContainsKey($key)) {
-        $csvLines += "$key,data,string,$($nvsValues[$key])"
-    }
-}
-if ($nvsValues.ContainsKey("sesami")) {
-    $csvLines += "sesami,data,u64,$($nvsValues['sesami'])"
-}
 $csvLines -join "`n" | Set-Content -NoNewline -Path $nvsCsv -Encoding UTF8
+Write-Host "  Profile: ssid=$ssid server=$sname"
 Write-Host "  NVS CSV written to $nvsCsv"
 
 # Generate NVS binary (size=0x6000 = 24K)
