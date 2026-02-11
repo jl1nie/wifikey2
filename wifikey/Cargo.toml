@@ -31,5 +31,11 @@ ws2812-esp32-rmt-driver = { version = "0.12.0", features = ["smart-leds-trait"] 
 toml-cfg = "0.2"
 wksocket = { path = "../wksocket" }
 mqttstunclient = { path = "../mqttstunclient", default-features = false, features = ["esp-idf-mqtt"] }
+
 [build-dependencies]
 embuild = "0.33"
+
+[package.metadata.esp-idf-sys]
+extra_components = [
+    { remote_component = { name = "espressif/mdns", version = "1.2" } }
+]

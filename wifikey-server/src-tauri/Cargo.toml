@@ -48,6 +48,9 @@ chrono = "0.4"
 config = "0.15.0"
 toml = "0.8"
 
+# mDNS
+mdns-sd = "0.11"
+
 # Internal dependencies
 wksocket = { path = "../../wksocket" }
 mqttstunclient = { path = "../../mqttstunclient", features = ["ru-mqtt"] }

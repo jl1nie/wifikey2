@@ -14,17 +14,22 @@ mod wifi;
 
 use anyhow::Result;
 use esp_idf_hal::{delay::FreeRtos, gpio::*, peripherals::Peripherals};
-use esp_idf_svc::{eventloop::EspSystemEventLoop, nvs::EspDefaultNvsPartition};
+use esp_idf_svc::{
+    eventloop::EspSystemEventLoop,
+    mdns::{EspMdns, QueryResult},
+    nvs::EspDefaultNvsPartition,
+};
 use esp_idf_sys::xTaskGetTickCountFromISR;
 #[cfg(feature = "board_m5atom")]
 use smart_leds::{SmartLedsWrite, RGB8};
 #[cfg(feature = "board_m5atom")]
 use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 
 use log::LevelFilter;
 use log::{error, info, trace, warn};
@@ -249,25 +254,74 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
     let mut last_stat: u32 = last_sent;
 
     loop {
-        let mut server = MQTTStunClient::new(
-            profile.server_name.clone(),
-            &profile.server_password,
-            None,
-            None,
-        );
-        server.sanity_check();
+        // Discover server address via mDNS (LAN) and MQTT/STUN (WAN) in parallel
+        let (tx, rx) = mpsc::channel::<SocketAddr>();
 
+        // Thread 1: mDNS query
+        let tx_mdns = tx.clone();
+        let server_name = profile.server_name.clone();
+        thread::Builder::new()
+            .stack_size(16384)
+            .spawn(move || {
+                let Ok(mut mdns) = EspMdns::take() else { return };
+                let _ = mdns.set_hostname("wifikey-client");
+                let results: Vec<QueryResult> = (0..4)
+                    .filter_map(|_| {
+                        mdns.query_ptr("_wifikey2", "_udp", std::time::Duration::from_secs(3))
+                            .ok()
+                            .and_then(|r| r.into_iter().next())
+                    })
+                    .collect();
+                for r in &results {
+                    info!("mDNS: found '{}' addr={:?} port={}", r.instance_name, r.addr, r.port);
+                    if r.instance_name == server_name {
+                        for addr in &r.addr {
+                            let sock_addr = SocketAddr::new(*addr, r.port);
+                            info!("mDNS: server matched at {}", sock_addr);
+                            let _ = tx_mdns.send(sock_addr);
+                            return;
+                        }
+                    }
+                }
+                info!("mDNS: server '{}' not found", server_name);
+            })
+            .unwrap();
+
+        // Thread 2: MQTT/STUN
+        let tx_mqtt = tx.clone();
+        let server_name2 = profile.server_name.clone();
+        let server_password2 = profile.server_password.clone();
+        thread::Builder::new()
+            .stack_size(16384)
+            .spawn(move || {
+                let mqtt_udp = UdpSocket::bind("0.0.0.0:0").unwrap();
+                let mut server = MQTTStunClient::new(
+                    server_name2,
+                    &server_password2,
+                    None,
+                    None,
+                );
+                server.sanity_check();
+                if let Some(addr) = server.get_server_addr(&mqtt_udp) {
+                    info!("MQTT/STUN: server found at {}", addr);
+                    let _ = tx_mqtt.send(addr);
+                }
+            })
+            .unwrap();
+
+        drop(tx);
+        let Ok(remote_addr) = rx.recv() else {
+            error!("Failed to discover server");
+            sleep(5000);
+            continue;
+        };
+
+        info!("Remote Server = {remote_addr}");
         let Ok(udp) = UdpSocket::bind("0.0.0.0:0") else {
             error!("Failed to bind UDP socket");
             sleep(5000);
             continue;
         };
-        let Some(remote_addr) = server.get_server_addr(&udp) else {
-            error!("Failed to get server address");
-            sleep(5000);
-            continue;
-        };
-        info!("Remote Server = {remote_addr}");
         let Ok(session) = WkSession::connect(remote_addr, udp) else {
             error!("Failed to connect to server");
             sleep(5000);

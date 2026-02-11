@@ -2,17 +2,18 @@ use crate::keyer::RemoteKeyer;
 use crate::rigcontrol::RigControl;
 use anyhow::Result;
 use chrono::{DateTime, Local};
-use log::{info, trace};
+use log::{info, warn};
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use mqttstunclient::MQTTStunClient;
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::atomic::Ordering;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize},
-    Arc, Mutex,
+    mpsc, Arc, Mutex,
 };
 use std::thread::{self, JoinHandle};
-use wksocket::{challenge, WkListener, WkReceiver};
+use wksocket::{challenge, WkListener, WkReceiver, WkSession, MDNS_SERVICE_TYPE};
 
 pub struct WiFiKeyConfig {
     server_name: String,
@@ -186,59 +187,104 @@ impl WifiKeyServer {
         let quit_thread = stop.clone();
         let rig = rigcontrol.clone();
 
-        let handle = thread::spawn(move || loop {
-            if quit_thread.load(Ordering::Relaxed) {
-                break;
-            }
-            let udp = UdpSocket::bind("0.0.0.0:0").unwrap();
+        let handle = thread::spawn(move || {
+            // Start mDNS service advertisement for LAN discovery
+            let lan_udp = UdpSocket::bind("0.0.0.0:0").unwrap();
+            let lan_port = lan_udp.local_addr().unwrap().port();
+            let mdns = ServiceDaemon::new().expect("Failed to create mDNS daemon");
+            let hostname = format!("wifikey2-{}.local.", std::process::id());
+            let svc = ServiceInfo::new(
+                MDNS_SERVICE_TYPE,
+                &config.server_name,
+                &hostname,
+                "",
+                lan_port,
+                None,
+            )
+            .expect("Failed to create mDNS service");
+            mdns.register(svc).expect("Failed to register mDNS service");
+            info!("mDNS: advertising {} on port {}", config.server_name, lan_port);
 
-            let mut server = MQTTStunClient::new(
-                config.server_name.clone(),
-                &config.server_password,
-                None,
-                None,
-            );
-            if let Some(client_addr) = server.get_client_addr(&udp) {
-                let addr = client_addr.to_string();
-                info!("Client address: {}", addr);
-            } else if let Ok(addr) = udp.local_addr() {
-                info!("Local address: {}", addr);
+            loop {
+                if quit_thread.load(Ordering::Relaxed) {
+                    let _ = mdns.shutdown();
+                    break;
+                }
+
+                let (tx, rx) = mpsc::channel::<(Arc<WkSession>, std::net::SocketAddr)>();
+
+                // LAN listener (mDNS-discoverable)
+                let tx_lan = tx.clone();
+                let lan_udp_clone = lan_udp.try_clone().unwrap();
+                let quit_lan = quit_thread.clone();
+                thread::spawn(move || {
+                    if quit_lan.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let mut listener = WkListener::bind(lan_udp_clone).unwrap();
+                    if let Ok((session, addr)) = listener.accept() {
+                        info!("LAN: accepted connection from {}", addr);
+                        let _ = tx_lan.send((session, addr));
+                    }
+                });
+
+                // WAN listener (MQTT/STUN)
+                let tx_wan = tx.clone();
+                let server_name = config.server_name.clone();
+                let server_password = config.server_password.clone();
+                let quit_wan = quit_thread.clone();
+                thread::spawn(move || {
+                    if quit_wan.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let wan_udp = UdpSocket::bind("0.0.0.0:0").unwrap();
+                    let mut mqtt = MQTTStunClient::new(
+                        server_name,
+                        &server_password,
+                        None,
+                        None,
+                    );
+                    if let Some(client_addr) = mqtt.get_client_addr(&wan_udp) {
+                        info!("WAN: client address = {}", client_addr);
+                    } else if let Ok(addr) = wan_udp.local_addr() {
+                        info!("WAN: local address = {}", addr);
+                    }
+                    let mut listener = WkListener::bind(wan_udp).unwrap();
+                    if let Ok((session, addr)) = listener.accept() {
+                        info!("WAN: accepted connection from {}", addr);
+                        let _ = tx_wan.send((session, addr));
+                    }
+                });
+
+                drop(tx);
+                let Ok((session, addr)) = rx.recv() else {
+                    warn!("No connection received, retrying...");
+                    continue;
+                };
+
+                let local_time: DateTime<Local> = Local::now();
+                info!("{}: Accept new session from {}", local_time, addr);
                 stat.set_peer(&addr.to_string());
-            } else {
-                panic!("Failed to get client address");
-            }
-
-            let mut listener = WkListener::bind(udp).unwrap();
-
-            match listener.accept() {
-                Ok((session, addr)) => {
-                    let local_time: DateTime<Local> = Local::now();
-                    info!("{}: Accept new session from {}", local_time, addr);
-                    stat.set_peer(&addr.to_string());
-                    stat.set_session_start(&local_time.format("%F %T").to_string());
-                    let Ok(_magic) = challenge(session.clone(), &config.server_password) else {
-                        info!("Auth. failure.");
-                        stat.set_auth_ok(false);
-                        stat.clear_peer();
-                        stat.clear_session_start();
-                        let _ = session.close();
-                        continue;
-                    };
-                    info!("Auth. Success.");
-                    stat.set_auth_ok(true);
-                    let mesg = WkReceiver::new(session).unwrap();
-                    stat.set_peer(&addr.to_string());
-                    let remote = RemoteKeyer::new(stat.clone(), rig.clone());
-                    remote.run(mesg);
-                    info!("remote keyer disconnected.");
+                stat.set_session_start(&local_time.format("%F %T").to_string());
+                let Ok(_magic) = challenge(session.clone(), &config.server_password) else {
+                    info!("Auth. failure.");
                     stat.set_auth_ok(false);
                     stat.clear_peer();
                     stat.clear_session_start();
-                    stat.set_stats(0, 0);
-                }
-                Err(e) => {
-                    trace!("err = {}", e);
-                }
+                    let _ = session.close();
+                    continue;
+                };
+                info!("Auth. Success.");
+                stat.set_auth_ok(true);
+                let mesg = WkReceiver::new(session).unwrap();
+                stat.set_peer(&addr.to_string());
+                let remote = RemoteKeyer::new(stat.clone(), rig.clone());
+                remote.run(mesg);
+                info!("remote keyer disconnected.");
+                stat.set_auth_ok(false);
+                stat.clear_peer();
+                stat.clear_session_start();
+                stat.set_stats(0, 0);
             }
         });
         Ok(Self {

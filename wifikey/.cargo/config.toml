@@ -21,6 +21,7 @@ rustflags = [
 build-std = ["std", "panic_abort"]
 
 [env]
+CARGO_WORKSPACE_DIR = { value = "..", relative = true }
 MCU = "esp32"
 # Note: this variable is not used by the pio builder (`cargo build --features pio`)
 #ESP_IDF_VERSION = "v4.4.7"
