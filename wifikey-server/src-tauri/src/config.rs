@@ -55,20 +55,27 @@ impl AppConfig {
         Ok(())
     }
 
-    /// Get the config file path (same directory as executable, or current directory)
-    fn config_path() -> Result<PathBuf> {
-        // Try executable directory first
-        if let Ok(exe_path) = std::env::current_exe() {
-            if let Some(exe_dir) = exe_path.parent() {
-                let config_path = exe_dir.join("cfg.toml");
-                if config_path.exists() {
-                    return Ok(config_path);
-                }
-            }
-        }
+    /// App identifier matching tauri.conf.json
+    const APP_ID: &'static str = "com.wifikey2.server";
 
-        // Fall back to current directory
-        Ok(PathBuf::from("cfg.toml"))
+    /// Get the config file path (%APPDATA%\com.wifikey2.server\cfg.toml)
+    fn config_path() -> Result<PathBuf> {
+        let appdata = std::env::var("APPDATA")
+            .with_context(|| "APPDATA environment variable not set")?;
+        let config_dir = PathBuf::from(appdata).join(Self::APP_ID);
+        if !config_dir.exists() {
+            fs::create_dir_all(&config_dir)
+                .with_context(|| format!("Failed to create config dir: {:?}", config_dir))?;
+        }
+        Ok(config_dir.join("cfg.toml"))
+    }
+
+    /// Get the config directory path for display
+    pub fn config_dir() -> String {
+        Self::config_path()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_string_lossy().to_string()))
+            .unwrap_or_default()
     }
 }
 

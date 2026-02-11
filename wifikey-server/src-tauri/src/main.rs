@@ -320,6 +320,7 @@ fn main() {
         ])
         .setup(move |app| {
             log::info!("WiFiKey2 starting...");
+            log::info!("Config dir: {}", AppConfig::config_dir());
             log::info!("Config: server_name={}, rigcontrol={}, keying={}",
                 init_config.server_name, init_config.rigcontrol_port, init_config.keying_port);
 
