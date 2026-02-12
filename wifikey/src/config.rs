@@ -141,6 +141,7 @@ pub struct WifiProfile {
     pub password: String,
     pub server_name: String,
     pub server_password: String,
+    pub tethering: bool,
 }
 
 impl WifiProfile {
@@ -151,6 +152,7 @@ impl WifiProfile {
             password: password.to_string(),
             server_name: server_name.to_string(),
             server_password: server_password.to_string(),
+            tethering: false,
         }
     }
 
@@ -170,6 +172,10 @@ impl WifiProfile {
 
         buf.push(self.server_password.len() as u8);
         buf.extend_from_slice(self.server_password.as_bytes());
+
+        // Flags byte: bit0 = tethering
+        let flags: u8 = if self.tethering { 0x01 } else { 0x00 };
+        buf.push(flags);
 
         buf
     }
@@ -197,11 +203,19 @@ impl WifiProfile {
         let server_name = read_string(data, &mut offset)?;
         let server_password = read_string(data, &mut offset)?;
 
+        // Read optional flags byte (backward compatible with old format)
+        let tethering = if offset < data.len() {
+            data[offset] & 0x01 != 0
+        } else {
+            false
+        };
+
         Ok(Self {
             ssid,
             password,
             server_name,
             server_password,
+            tethering,
         })
     }
 

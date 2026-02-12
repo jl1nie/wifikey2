@@ -1,6 +1,5 @@
 // WiFiKey2 Settings Module
-
-import { invoke, addLogEntry } from './main.js';
+// invoke and addLogEntry are provided by main.js (shared global scope)
 
 // DOM Elements
 const settingsBtn = document.getElementById('settings-btn');
@@ -26,24 +25,17 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 function setupSettingsEventListeners() {
-    // Open settings
     settingsBtn.addEventListener('click', openSettings);
-
-    // Close settings
     settingsClose.addEventListener('click', closeSettings);
     settingsCancel.addEventListener('click', closeSettings);
-
-    // Save settings
     settingsSave.addEventListener('click', saveSettings);
 
-    // Close on backdrop click
     settingsModal.addEventListener('click', (e) => {
         if (e.target === settingsModal) {
             closeSettings();
         }
     });
 
-    // Close on Escape key
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && settingsModal.classList.contains('show')) {
             closeSettings();
@@ -53,20 +45,13 @@ function setupSettingsEventListeners() {
 
 async function openSettings() {
     try {
-        // Load current config
         currentConfig = await invoke('get_config');
-
-        // Load available serial ports
         const ports = await invoke('get_serial_ports');
-
-        // Populate form
         populateForm(currentConfig, ports);
-
-        // Show modal
         settingsModal.classList.add('show');
     } catch (error) {
         console.error('Failed to load settings:', error);
-        addLogEntry(`Failed to load settings: ${error}`, 'error');
+        window.addLogEntry(`Failed to load settings: ${error}`, 'error');
     }
 }
 
@@ -75,23 +60,17 @@ function closeSettings() {
 }
 
 function populateForm(config, ports) {
-    // Set text inputs
     serverNameInput.value = config.server_name || '';
     serverPasswordInput.value = config.server_password || '';
     useRtsCheckbox.checked = config.use_rts_for_keying || false;
-
-    // Populate port selects
     populatePortSelect(rigcontrolPortSelect, ports, config.rigcontrol_port);
     populatePortSelect(keyingPortSelect, ports, config.keying_port);
 }
 
 function populatePortSelect(select, ports, currentValue) {
-    // Clear existing options except the first placeholder
     while (select.options.length > 1) {
         select.remove(1);
     }
-
-    // Add port options
     ports.forEach(port => {
         const option = document.createElement('option');
         option.value = port;
@@ -101,8 +80,6 @@ function populatePortSelect(select, ports, currentValue) {
         }
         select.appendChild(option);
     });
-
-    // If current value is not in ports list but exists, add it
     if (currentValue && !ports.includes(currentValue)) {
         const option = document.createElement('option');
         option.value = currentValue;
@@ -114,13 +91,10 @@ function populatePortSelect(select, ports, currentValue) {
 
 async function saveSettings() {
     try {
-        // Validate form
         if (!settingsForm.checkValidity()) {
             settingsForm.reportValidity();
             return;
         }
-
-        // Collect form data
         const newConfig = {
             server_name: serverNameInput.value.trim(),
             server_password: serverPasswordInput.value,
@@ -128,18 +102,14 @@ async function saveSettings() {
             keying_port: keyingPortSelect.value,
             use_rts_for_keying: useRtsCheckbox.checked,
         };
-
-        // Save to backend
         settingsSave.disabled = true;
         settingsSave.textContent = 'Saving...';
-
         await invoke('save_config', { newConfig });
-
-        addLogEntry('Settings saved successfully', 'info');
+        window.addLogEntry('Settings saved successfully', 'info');
         closeSettings();
     } catch (error) {
         console.error('Failed to save settings:', error);
-        addLogEntry(`Failed to save settings: ${error}`, 'error');
+        window.addLogEntry(`Failed to save settings: ${error}`, 'error');
     } finally {
         settingsSave.disabled = false;
         settingsSave.textContent = 'Save';

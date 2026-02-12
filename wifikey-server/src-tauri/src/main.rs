@@ -97,6 +97,7 @@ pub struct Esp32Profile {
     pub index: usize,
     pub ssid: String,
     pub server_name: String,
+    pub tethering: bool,
 }
 
 /// Send AT command to ESP32 via serial and get response
@@ -166,11 +167,14 @@ async fn esp32_list_profiles(port: String) -> Result<Vec<Esp32Profile>, String> 
                     .unwrap_or("")
                     .to_string();
 
+                let tethering = rest.contains("[T]");
+
                 if !ssid.is_empty() {
                     profiles.push(Esp32Profile {
                         index,
                         ssid,
                         server_name,
+                        tethering,
                     });
                 }
             }
@@ -188,10 +192,12 @@ async fn esp32_add_profile(
     wifi_password: String,
     server_name: String,
     server_password: String,
+    tethering: bool,
 ) -> Result<String, String> {
+    let tethering_flag = if tethering { ",1" } else { "" };
     let cmd = format!(
-        "AT+ADD={},{},{},{}",
-        ssid, wifi_password, server_name, server_password
+        "AT+ADD={},{},{},{}{}",
+        ssid, wifi_password, server_name, server_password, tethering_flag
     );
     esp32_send_command(port, cmd).await
 }

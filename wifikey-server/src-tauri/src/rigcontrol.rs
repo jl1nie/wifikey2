@@ -6,8 +6,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 pub struct RigControl {
-    keying_port: Arc<Mutex<Box<dyn SerialPort>>>,
-    rigcontrol_port: Arc<Mutex<Box<dyn SerialPort>>>,
+    keying_port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
+    rigcontrol_port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
     use_rts_for_keying: bool,
 }
 
@@ -35,7 +35,7 @@ impl RigControl {
             serialport::new(keying_port, 115_200)
                 .timeout(Duration::from_micros(10))
                 .open()
-                .with_context(|| format!("faild to open port {} for keying.", &keying_port))?,
+                .with_context(|| format!("failed to open port {} for keying.", &keying_port))?,
         ));
         let rigcontrol_port = Arc::new(Mutex::new(
             serialport::new(rigcontrol_port, 4800)
@@ -44,19 +44,29 @@ impl RigControl {
                 .parity(serialport::Parity::None)
                 .open()
                 .with_context(|| {
-                    format!("faild to open port {} for rigcontrol.", &rigcontrol_port)
+                    format!("failed to open port {} for rigcontrol.", &rigcontrol_port)
                 })?,
         ));
         Ok(Self {
-            keying_port,
-            rigcontrol_port,
+            keying_port: Some(keying_port),
+            rigcontrol_port: Some(rigcontrol_port),
             use_rts_for_keying,
         })
     }
 
+    /// Create a dummy RigControl with no serial ports (for when ports are unavailable)
+    pub fn dummy() -> Self {
+        Self {
+            keying_port: None,
+            rigcontrol_port: None,
+            use_rts_for_keying: false,
+        }
+    }
+
     #[inline]
     pub fn assert_key(&self, level: bool) {
-        let mut port = self.keying_port.lock().unwrap();
+        let Some(ref keying) = self.keying_port else { return };
+        let mut port = keying.lock().unwrap();
         if self.use_rts_for_keying {
             let _ = port.write_request_to_send(level);
         } else {
@@ -65,7 +75,8 @@ impl RigControl {
     }
 
     fn assert_atu(&self, level: bool) {
-        let mut port = self.keying_port.lock().unwrap();
+        let Some(ref keying) = self.keying_port else { return };
+        let mut port = keying.lock().unwrap();
         if !self.use_rts_for_keying {
             let _ = port.write_request_to_send(level);
         } else {
@@ -75,7 +86,10 @@ impl RigControl {
 
     fn cat_write(&self, command: &str) -> Result<usize> {
         info!("cat write {}", command);
-        let Ok(ref mut rigport) = self.rigcontrol_port.lock() else {
+        let Some(ref rigport) = self.rigcontrol_port else {
+            bail!("rig control port not available")
+        };
+        let Ok(ref mut rigport) = rigport.lock() else {
             bail!("rig control port lock failed")
         };
         let n = rigport.write(command.as_bytes())?;
@@ -83,7 +97,10 @@ impl RigControl {
     }
 
     fn cat_read(&self, command: &str) -> Result<String> {
-        let Ok(mut rigport) = self.rigcontrol_port.lock() else {
+        let Some(ref rigport) = self.rigcontrol_port else {
+            bail!("rig control port not available")
+        };
+        let Ok(mut rigport) = rigport.lock() else {
             bail!("rig control port lock failed")
         };
         rigport.clear(serialport::ClearBuffer::Input)?;

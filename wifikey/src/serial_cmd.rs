@@ -93,7 +93,7 @@ fn help_text() -> String {
         "WifiKey Serial Commands:\r\n\
          AT          - Test connection\r\n\
          AT+LIST     - List all profiles\r\n\
-         AT+ADD=<ssid>,<wifipass>,<server>,<serverpass> - Add profile\r\n\
+         AT+ADD=<ssid>,<wifipass>,<server>,<serverpass>[,<tethering>] - Add profile\r\n\
          AT+DEL=<n>  - Delete profile at index n\r\n\
          AT+CLEAR    - Clear all profiles\r\n\
          AT+GPIO     - Show GPIO settings\r\n\
@@ -125,9 +125,10 @@ fn list_profiles(config_manager: &Arc<Mutex<ConfigManager>>) -> String {
 
     let mut response = String::new();
     for (i, p) in profiles.iter().enumerate() {
+        let tether_mark = if p.tethering { " [T]" } else { "" };
         response.push_str(&format!(
-            "[{}] SSID={} SERVER={}\r\n",
-            i, p.ssid, p.server_name
+            "[{}] SSID={} SERVER={}{}\r\n",
+            i, p.ssid, p.server_name, tether_mark
         ));
     }
     response.push_str(OK);
@@ -135,17 +136,21 @@ fn list_profiles(config_manager: &Arc<Mutex<ConfigManager>>) -> String {
 }
 
 fn add_profile(args: &str, config_manager: &Arc<Mutex<ConfigManager>>) -> String {
-    // Parse: ssid,wifipass,server,serverpass
-    let parts: Vec<&str> = args.splitn(4, ',').collect();
+    // Parse: ssid,wifipass,server,serverpass[,tethering]
+    let parts: Vec<&str> = args.splitn(5, ',').collect();
 
     if parts.len() < 3 {
-        return format!("Usage: AT+ADD=<ssid>,<wifipass>,<server>,<serverpass>\r\n{ERROR}");
+        return format!("Usage: AT+ADD=<ssid>,<wifipass>,<server>,<serverpass>[,<tethering>]\r\n{ERROR}");
     }
 
     let ssid = parts[0].trim();
     let password = parts.get(1).map(|s| s.trim()).unwrap_or("");
     let server_name = parts.get(2).map(|s| s.trim()).unwrap_or("");
     let server_password = parts.get(3).map(|s| s.trim()).unwrap_or("");
+    let tethering = parts
+        .get(4)
+        .map(|s| matches!(s.trim(), "1" | "true"))
+        .unwrap_or(false);
 
     if ssid.is_empty() || server_name.is_empty() {
         return format!("SSID and server name are required\r\n{ERROR}");
@@ -156,6 +161,7 @@ fn add_profile(args: &str, config_manager: &Arc<Mutex<ConfigManager>>) -> String
         password: password.to_string(),
         server_name: server_name.to_string(),
         server_password: server_password.to_string(),
+        tethering,
     };
 
     match config_manager.lock().unwrap().add_profile(profile) {

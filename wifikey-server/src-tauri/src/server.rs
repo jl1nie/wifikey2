@@ -175,12 +175,20 @@ impl Drop for WifiKeyServer {
 
 impl WifiKeyServer {
     pub fn new(config: Arc<WiFiKeyConfig>, remote_stats: Arc<RemoteStats>) -> Result<Self> {
-        let rigcontrol = RigControl::new(
+        let rigcontrol = match RigControl::new(
             &config.rigcontrol_port,
             &config.keying_port,
             config.use_rts_for_keying,
-        )?;
-        let rigcontrol = Arc::new(rigcontrol);
+        ) {
+            Ok(rig) => {
+                info!("Serial ports opened: rigcontrol={}, keying={}", config.rigcontrol_port, config.keying_port);
+                Arc::new(rig)
+            }
+            Err(e) => {
+                warn!("Failed to open serial ports: {} - running without rig control", e);
+                Arc::new(RigControl::dummy())
+            }
+        };
         let stat = remote_stats.clone();
         let config = config.clone();
         let stop = Arc::new(AtomicBool::new(false));
@@ -211,7 +219,8 @@ impl WifiKeyServer {
                     break;
                 }
 
-                let (tx, rx) = mpsc::channel::<(Arc<WkSession>, std::net::SocketAddr)>();
+                // WkListenerをセッション終了まで保持する (recvスレッドがパケットを供給し続ける)
+                let (tx, rx) = mpsc::channel::<(Arc<WkSession>, std::net::SocketAddr, WkListener)>();
 
                 // LAN listener (mDNS-discoverable)
                 let tx_lan = tx.clone();
@@ -224,7 +233,7 @@ impl WifiKeyServer {
                     let mut listener = WkListener::bind(lan_udp_clone).unwrap();
                     if let Ok((session, addr)) = listener.accept() {
                         info!("LAN: accepted connection from {}", addr);
-                        let _ = tx_lan.send((session, addr));
+                        let _ = tx_lan.send((session, addr, listener));
                     }
                 });
 
@@ -252,12 +261,12 @@ impl WifiKeyServer {
                     let mut listener = WkListener::bind(wan_udp).unwrap();
                     if let Ok((session, addr)) = listener.accept() {
                         info!("WAN: accepted connection from {}", addr);
-                        let _ = tx_wan.send((session, addr));
+                        let _ = tx_wan.send((session, addr, listener));
                     }
                 });
 
                 drop(tx);
-                let Ok((session, addr)) = rx.recv() else {
+                let Ok((session, addr, _listener)) = rx.recv() else {
                     warn!("No connection received, retrying...");
                     continue;
                 };

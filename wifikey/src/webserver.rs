@@ -80,6 +80,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <label>Server Password</label>
                 <input type="password" id="serverpass" maxlength="64">
 
+                <label style="display:flex;align-items:center;gap:8px;margin:8px 0;color:#eee;cursor:pointer">
+                    <input type="checkbox" id="tethering" style="width:auto;margin:0">
+                    Mobile/Tethering (skip mDNS)
+                </label>
+
                 <button type="submit" class="btn-primary">Add Profile</button>
             </form>
         </div>
@@ -142,7 +147,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 } else {
                     container.innerHTML = profiles.map((p, i) => 
                         `<div class="profile-item">
-                            <span>${p.ssid} → ${p.server_name}</span>
+                            <span>${p.ssid} → ${p.server_name}${p.tethering ? ' [T]' : ''}</span>
                             <button class="btn-danger" onclick="deleteProfile(${i})">Delete</button>
                         </div>`
                     ).join('');
@@ -182,7 +187,8 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 ssid: document.getElementById('ssid').value,
                 password: document.getElementById('wifipass').value,
                 server_name: document.getElementById('server').value,
-                server_password: document.getElementById('serverpass').value
+                server_password: document.getElementById('serverpass').value,
+                tethering: document.getElementById('tethering').checked
             };
             try {
                 const res = await fetch('/api/profiles', {
@@ -523,9 +529,10 @@ fn profiles_to_json(profiles: &[WifiProfile]) -> String {
         .iter()
         .map(|p| {
             format!(
-                r#"{{"ssid":"{}","server_name":"{}"}}"#,
+                r#"{{"ssid":"{}","server_name":"{}","tethering":{}}}"#,
                 escape_json(&p.ssid),
-                escape_json(&p.server_name)
+                escape_json(&p.server_name),
+                p.tethering
             )
         })
         .collect();
@@ -558,6 +565,7 @@ fn parse_profile_json(data: &[u8]) -> Option<WifiProfile> {
         password: extract("password").unwrap_or_default(),
         server_name: extract("server_name")?,
         server_password: extract("server_password").unwrap_or_default(),
+        tethering: s.contains(r#""tethering":true"#),
     })
 }
 

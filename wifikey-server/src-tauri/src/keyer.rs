@@ -217,7 +217,7 @@ impl RemoteKeyer {
                                         (remote_interval - local_interval) as usize
                                     };
                                     // Use exponential moving average for smoothing
-                                    rtt_estimate = (rtt_estimate * 7 + diff * 10) / 8;
+                                    rtt_estimate = (rtt_estimate * 7 + diff) / 8;
                                 }
                                 last_sync_local = now;
 

@@ -163,6 +163,7 @@ impl<'a> WifiManager<'a> {
     }
 
     /// Stop WiFi
+    #[allow(dead_code)]
     pub fn stop(&mut self) -> Result<()> {
         self.wifi.stop()?;
         Ok(())

@@ -16,7 +16,7 @@ use anyhow::Result;
 use esp_idf_hal::{delay::FreeRtos, gpio::*, peripherals::Peripherals};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
-    mdns::{EspMdns, QueryResult},
+    mdns::{EspMdns, Interface, Protocol, QueryResult},
     nvs::EspDefaultNvsPartition,
 };
 use esp_idf_sys::xTaskGetTickCountFromISR;
@@ -28,8 +28,7 @@ use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::{mpsc, Arc, Mutex};
-use std::thread;
+use std::sync::{Arc, Mutex};
 
 use log::LevelFilter;
 use log::{error, info, trace, warn};
@@ -171,29 +170,17 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "board_m5atom"))]
     led.set_low().unwrap();
 
-    // Connect to WiFi using profiles
-    let active_profile = match wifi_manager.connect_with_profiles(&profiles) {
-        Ok(profile) => {
-            info!("Connected to {} / {}", profile.ssid, profile.server_name);
-            profile
-        }
-        Err(e) => {
-            error!("Failed to connect to any known network: {e:?}");
-            warn!("Entering AP mode for reconfiguration...");
-
-            #[cfg(feature = "board_m5atom")]
-            serial_led.write(blue_color.clone()).unwrap();
-
-            // Stop WiFi client mode and start AP mode
-            let _ = wifi_manager.stop();
-            let ap_ssid = wifi_manager.generate_ap_ssid();
-            wifi_manager.start_ap_mode(&ap_ssid, None)?;
-            let _webserver = ConfigWebServer::start(config_manager)?;
-
-            info!("Serial commands available (AT+HELP for list)");
-
-            loop {
-                FreeRtos::delay_ms(1000);
+    // Connect to WiFi using profiles (retry indefinitely)
+    let active_profile = loop {
+        match wifi_manager.connect_with_profiles(&profiles) {
+            Ok(profile) => {
+                info!("Connected to {} / {}", profile.ssid, profile.server_name);
+                break profile;
+            }
+            Err(e) => {
+                error!("Failed to connect to any known network: {e:?}");
+                warn!("Retrying in 5 seconds...");
+                FreeRtos::delay_ms(5000);
             }
         }
     };
@@ -235,6 +222,39 @@ fn check_long_press<T: InputPin>(button: &PinDriver<T, Input>, duration_ms: u32)
     held_time >= duration_ms
 }
 
+/// Try mDNS discovery with a 2-second timeout
+/// Returns the server's socket address if found
+fn try_mdns_discovery(server_name: &str) -> Option<SocketAddr> {
+    let Ok(mut mdns) = EspMdns::take() else {
+        warn!("Failed to take EspMdns");
+        return None;
+    };
+    let _ = mdns.set_hostname("wifikey-client");
+    let new_qr = || QueryResult {
+        instance_name: None, hostname: None, port: 0,
+        txt: Vec::new(), addr: Vec::new(),
+        interface: Interface::STA, ip_protocol: Protocol::V4,
+    };
+    let mut results = [new_qr(), new_qr(), new_qr(), new_qr()];
+    let count = mdns.query_ptr(
+        "_wifikey2", "_udp",
+        std::time::Duration::from_secs(2),
+        4, &mut results,
+    ).unwrap_or(0);
+    for r in &results[..count] {
+        info!("mDNS: found '{:?}' addr={:?} port={}", r.instance_name, r.addr, r.port);
+        if r.instance_name.as_deref() == Some(server_name) {
+            for addr in &r.addr {
+                let sock_addr = SocketAddr::new(*addr, r.port);
+                info!("mDNS: server matched at {}", sock_addr);
+                return Some(sock_addr);
+            }
+        }
+    }
+    info!("mDNS: server '{}' not found", server_name);
+    None
+}
+
 /// Main keying loop - handles connection and keying
 fn run_keying_loop<K: InputPin, B: InputPin>(
     profile: &WifiProfile,
@@ -254,73 +274,62 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
     let mut last_stat: u32 = last_sent;
 
     loop {
-        // Discover server address via mDNS (LAN) and MQTT/STUN (WAN) in parallel
-        let (tx, rx) = mpsc::channel::<SocketAddr>();
-
-        // Thread 1: mDNS query
-        let tx_mdns = tx.clone();
-        let server_name = profile.server_name.clone();
-        thread::Builder::new()
-            .stack_size(16384)
-            .spawn(move || {
-                let Ok(mut mdns) = EspMdns::take() else { return };
-                let _ = mdns.set_hostname("wifikey-client");
-                let results: Vec<QueryResult> = (0..4)
-                    .filter_map(|_| {
-                        mdns.query_ptr("_wifikey2", "_udp", std::time::Duration::from_secs(3))
-                            .ok()
-                            .and_then(|r| r.into_iter().next())
-                    })
-                    .collect();
-                for r in &results {
-                    info!("mDNS: found '{}' addr={:?} port={}", r.instance_name, r.addr, r.port);
-                    if r.instance_name == server_name {
-                        for addr in &r.addr {
-                            let sock_addr = SocketAddr::new(*addr, r.port);
-                            info!("mDNS: server matched at {}", sock_addr);
-                            let _ = tx_mdns.send(sock_addr);
-                            return;
-                        }
+        // Discover server address via interleaved mDNS + MQTT/STUN
+        // mDNS (LAN, fast) → STUN/MQTT (WAN, slower), repeat once
+        let discovery_result: Option<(SocketAddr, Option<UdpSocket>)> = 'discovery: {
+            for round in 0..2 {
+                // mDNS step (skip if tethering)
+                if !profile.tethering {
+                    info!("Discovery round {}: trying mDNS...", round);
+                    if let Some(addr) = try_mdns_discovery(&profile.server_name) {
+                        break 'discovery Some((addr, None));
                     }
                 }
-                info!("mDNS: server '{}' not found", server_name);
-            })
-            .unwrap();
 
-        // Thread 2: MQTT/STUN
-        let tx_mqtt = tx.clone();
-        let server_name2 = profile.server_name.clone();
-        let server_password2 = profile.server_password.clone();
-        thread::Builder::new()
-            .stack_size(16384)
-            .spawn(move || {
-                let mqtt_udp = UdpSocket::bind("0.0.0.0:0").unwrap();
-                let mut server = MQTTStunClient::new(
-                    server_name2,
-                    &server_password2,
+                // STUN/MQTT step
+                info!("Discovery round {}: trying STUN/MQTT...", round);
+                let mqtt_udp = match UdpSocket::bind("0.0.0.0:0") {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Failed to bind UDP socket: {e}");
+                        continue;
+                    }
+                };
+                let mut stun_client = MQTTStunClient::new(
+                    profile.server_name.clone(),
+                    &profile.server_password,
                     None,
                     None,
                 );
-                server.sanity_check();
-                if let Some(addr) = server.get_server_addr(&mqtt_udp) {
+                stun_client.sanity_check();
+                if let Some(addr) = stun_client.get_server_addr(&mqtt_udp) {
                     info!("MQTT/STUN: server found at {}", addr);
-                    let _ = tx_mqtt.send(addr);
+                    break 'discovery Some((addr, Some(mqtt_udp)));
                 }
-            })
-            .unwrap();
+            }
+            None
+        };
 
-        drop(tx);
-        let Ok(remote_addr) = rx.recv() else {
+        let Some((remote_addr, punched_udp)) = discovery_result else {
             error!("Failed to discover server");
             sleep(5000);
             continue;
         };
 
         info!("Remote Server = {remote_addr}");
-        let Ok(udp) = UdpSocket::bind("0.0.0.0:0") else {
-            error!("Failed to bind UDP socket");
-            sleep(5000);
-            continue;
+        let udp = match punched_udp {
+            Some(udp) => {
+                info!("Reusing hole-punched UDP socket (local={})", udp.local_addr().unwrap());
+                udp
+            }
+            None => {
+                let Ok(udp) = UdpSocket::bind("0.0.0.0:0") else {
+                    error!("Failed to bind UDP socket");
+                    sleep(5000);
+                    continue;
+                };
+                udp
+            }
         };
         let Ok(session) = WkSession::connect(remote_addr, udp) else {
             error!("Failed to connect to server");
