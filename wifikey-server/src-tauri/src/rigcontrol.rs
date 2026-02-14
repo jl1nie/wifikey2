@@ -19,13 +19,28 @@ fn lock_port(port: &Mutex<Box<dyn SerialPort>>) -> LuaResult<std::sync::MutexGua
     port.lock().map_err(|e| LuaError::RuntimeError(format!("serial port lock failed: {}", e)))
 }
 
+/// バイト列を hex + ASCII で表示するデバッグ用ヘルパー
+fn hex_dump(data: &[u8]) -> String {
+    let hex: Vec<String> = data.iter().map(|b| format!("{:02X}", b)).collect();
+    let ascii: String = data
+        .iter()
+        .map(|&b| if (0x20..=0x7E).contains(&b) { b as char } else { '.' })
+        .collect();
+    format!("[{}] \"{}\"", hex.join(" "), ascii)
+}
+
 impl LuaUserData for LuaSerialPort {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         // port:write(data) -> bytes_written
         methods.add_method("write", |_, this, data: LuaString| {
             let mut port = lock_port(&this.port)?;
             let bytes = data.as_bytes();
-            let n = port.write(&*bytes).map_err(LuaError::external)?;
+            info!("[serial TX] {} bytes: {}", bytes.len(), hex_dump(&*bytes));
+            let n = port.write(&*bytes).map_err(|e| {
+                info!("[serial TX ERROR] {}", e);
+                LuaError::external(e)
+            })?;
+            info!("[serial TX] wrote {} bytes", n);
             Ok(n)
         });
 
@@ -33,13 +48,19 @@ impl LuaUserData for LuaSerialPort {
         methods.add_method("read", |lua, this, max_bytes: usize| {
             let mut port = lock_port(&this.port)?;
             let mut buf = vec![0u8; max_bytes];
-            let n = port.read(&mut buf).map_err(LuaError::external)?;
+            info!("[serial RX] reading up to {} bytes...", max_bytes);
+            let n = port.read(&mut buf).map_err(|e| {
+                info!("[serial RX ERROR] {}", e);
+                LuaError::external(e)
+            })?;
+            info!("[serial RX] {} bytes: {}", n, hex_dump(&buf[..n]));
             lua.create_string(&buf[..n])
         });
 
         // port:clear_input()
         methods.add_method("clear_input", |_, this, ()| {
             let port = lock_port(&this.port)?;
+            info!("[serial] clear_input");
             port.clear(serialport::ClearBuffer::Input)
                 .map_err(LuaError::external)?;
             Ok(())
@@ -241,8 +262,10 @@ impl RigControl {
     /// Lua VMを初期化し、スクリプトを読み込む
     fn init_lua(rig_script: &str, rigcontrol_port: &str) -> Result<LuaState> {
         let script_path = find_script(rig_script)?;
+        info!("[lua] Loading script from: {:?}", script_path);
         let script_source = std::fs::read_to_string(&script_path)
             .with_context(|| format!("Failed to read script: {:?}", script_path))?;
+        info!("[lua] Script size: {} bytes", script_source.len());
 
         // サンドボックス: io/os/debug モジュール除外
         let lua = Lua::new_with(
@@ -289,6 +312,10 @@ impl RigControl {
         let stop_bits_val: u8 = serial_config.get("stop_bits").unwrap_or(2);
         let parity_str: String = serial_config.get("parity").unwrap_or_else(|_| "none".to_string());
         let timeout_ms: u64 = serial_config.get("timeout_ms").unwrap_or(100);
+        info!(
+            "[lua] serial_config: baud={}, stop_bits={}, parity={}, timeout_ms={}",
+            baud, stop_bits_val, parity_str, timeout_ms
+        );
 
         let stop_bits = match stop_bits_val {
             1 => serialport::StopBits::One,
@@ -341,16 +368,25 @@ impl RigControl {
 
     /// Lua関数を呼び出すヘルパー（引数なし、戻り値T）
     fn call_lua<T: FromLua>(&self, func_name: &str) -> Result<T> {
+        info!("[lua call] {}()", func_name);
         let Some(ref lua_state) = self.lua_state else {
+            info!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
         let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
         let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
         let func: LuaFunction = rig_table.get(func_name)
-            .map_err(|e| anyhow::anyhow!("Script missing function '{}': {}", func_name, e))?;
+            .map_err(|e| {
+                info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+                anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
+            })?;
         let result: T = func.call(rig_table.clone())
-            .map_err(|e| anyhow::anyhow!("Lua '{}' failed: {}", func_name, e))?;
+            .map_err(|e| {
+                info!("[lua call] FAIL: {}() error: {}", func_name, e);
+                anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
+            })?;
+        info!("[lua call] {}() OK", func_name);
         Ok(result)
     }
 
@@ -360,16 +396,25 @@ impl RigControl {
         func_name: &str,
         arg: A,
     ) -> Result<T> {
+        info!("[lua call] {}(arg)", func_name);
         let Some(ref lua_state) = self.lua_state else {
+            info!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
         let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
         let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
         let func: LuaFunction = rig_table.get(func_name)
-            .map_err(|e| anyhow::anyhow!("Script missing function '{}': {}", func_name, e))?;
+            .map_err(|e| {
+                info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+                anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
+            })?;
         let result: T = func.call((rig_table.clone(), arg))
-            .map_err(|e| anyhow::anyhow!("Lua '{}' failed: {}", func_name, e))?;
+            .map_err(|e| {
+                info!("[lua call] FAIL: {}(arg) error: {}", func_name, e);
+                anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
+            })?;
+        info!("[lua call] {}(arg) OK", func_name);
         Ok(result)
     }
 
@@ -380,16 +425,25 @@ impl RigControl {
         arg1: A1,
         arg2: A2,
     ) -> Result<T> {
+        info!("[lua call] {}(arg1, arg2)", func_name);
         let Some(ref lua_state) = self.lua_state else {
+            info!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
         let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
         let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
         let func: LuaFunction = rig_table.get(func_name)
-            .map_err(|e| anyhow::anyhow!("Script missing function '{}': {}", func_name, e))?;
+            .map_err(|e| {
+                info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+                anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
+            })?;
         let result: T = func.call((rig_table.clone(), arg1, arg2))
-            .map_err(|e| anyhow::anyhow!("Lua '{}' failed: {}", func_name, e))?;
+            .map_err(|e| {
+                info!("[lua call] FAIL: {}(arg1, arg2) error: {}", func_name, e);
+                anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
+            })?;
+        info!("[lua call] {}(arg1, arg2) OK", func_name);
         Ok(result)
     }
 
@@ -477,10 +531,15 @@ impl RigControl {
     }
 
     pub fn start_atu_with_rigcontrol(&self) -> Result<usize> {
+        info!("[ATU] start_atu_with_rigcontrol begin");
         let saved_power = self.get_power()?;
+        info!("[ATU] saved power = {}", saved_power);
         let saved_mode = self.get_mode()?;
+        info!("[ATU] saved mode = {}", saved_mode.to_str());
 
+        info!("[ATU] setting CW-U mode");
         self.set_mode(Mode::CwU)?;
+        info!("[ATU] setting power to 10W");
         self.set_power(10)?;
         sleep(Duration::from_millis(500));
 
