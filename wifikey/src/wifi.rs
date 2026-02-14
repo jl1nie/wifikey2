@@ -11,7 +11,8 @@ use esp_idf_svc::{
         EspWifi,
     },
 };
-use log::info;
+use esp_idf_hal::delay::FreeRtos;
+use log::{info, warn};
 
 use crate::config::WifiProfile;
 
@@ -170,9 +171,20 @@ impl<'a> WifiManager<'a> {
     }
 
     /// Check if connected
-    #[allow(dead_code)]
     pub fn is_connected(&self) -> bool {
         self.wifi.is_connected().unwrap_or(false)
+    }
+
+    /// Reconnect to WiFi
+    ///
+    /// Cleanly disconnects first (clearing AP's association state),
+    /// waits 3 seconds to avoid "comeback time" rejection, then
+    /// rescans and reconnects using the provided profiles.
+    pub fn reconnect(&mut self, profiles: &[WifiProfile]) -> Result<WifiProfile> {
+        warn!("Disconnecting WiFi for clean reconnect...");
+        let _ = self.wifi.disconnect();
+        FreeRtos::delay_ms(3000); // Wait for AP to clear association (comeback time ≈ 1s)
+        self.connect_with_profiles(profiles)
     }
 
     /// Check if WiFi is started

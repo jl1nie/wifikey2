@@ -344,6 +344,7 @@ impl Drop for WkListener {
 
 impl WkListener {
     pub fn bind(udp: UdpSocket) -> Result<Self> {
+        udp.set_read_timeout(Some(Duration::from_secs(1)))?;
         let udp = Arc::new(udp);
         let (tx, rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
@@ -425,11 +426,17 @@ impl WkListener {
     }
 
     pub fn accept(&mut self) -> Result<(Arc<WkSession>, SocketAddr)> {
-        match self.rx.recv() {
-            Ok((s, addr)) => Ok((s, addr)),
-            Err(e) => {
-                trace!("accept err={e}");
-                Err(e.into())
+        loop {
+            match self.rx.recv_timeout(Duration::from_secs(1)) {
+                Ok((s, addr)) => return Ok((s, addr)),
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if self.stop.load(Ordering::Relaxed) {
+                        return Err(anyhow::anyhow!("listener stopped"));
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(anyhow::anyhow!("listener closed"));
+                }
             }
         }
     }

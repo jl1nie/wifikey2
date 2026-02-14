@@ -47,6 +47,12 @@ impl RigControl {
                     format!("failed to open port {} for rigcontrol.", &rigcontrol_port)
                 })?,
         ));
+        // DTR/RTSを明示的にOFFにする（OSがポートオープン時にONにする場合がある）
+        {
+            let mut port = keying_port.lock().unwrap();
+            let _ = port.write_data_terminal_ready(false);
+            let _ = port.write_request_to_send(false);
+        }
         Ok(Self {
             keying_port: Some(keying_port),
             rigcontrol_port: Some(rigcontrol_port),

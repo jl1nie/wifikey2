@@ -228,10 +228,17 @@ async fn restart_server_internal(
 ) -> Result<(), String> {
     let mut server_guard = state.server.lock().await;
 
-    // Stop existing server (if any)
+    // Stop existing server (if any) - Drop handles stop + join
     if let Some(server) = server_guard.take() {
-        server.stop();
+        drop(server);
     }
+    // Reset stats after old server is fully stopped
+    state.remote_stats.clear_peer();
+    state.remote_stats.clear_session_start();
+    state.remote_stats.set_session_active(false);
+    state.remote_stats.set_auth_ok(false);
+    state.remote_stats.set_stats(0, 0);
+    state.remote_stats.set_rtt(0);
 
     // Create new server configuration
     let wk_config = Arc::new(WiFiKeyConfig::new(

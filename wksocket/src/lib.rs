@@ -8,7 +8,11 @@ mod wkmessage;
 mod wksession;
 mod wkutil;
 
-/// mDNS service type for WiFiKey2 server discovery
+/// mDNS service type for WiFiKey2 server discovery (mdns-sd crate format)
 pub const MDNS_SERVICE_TYPE: &str = "_wifikey2._udp.local.";
 /// mDNS service domain
 pub const MDNS_DOMAIN: &str = "local.";
+/// mDNS service name for ESP-IDF query_ptr
+pub const MDNS_SERVICE_NAME: &str = "_wifikey2";
+/// mDNS protocol for ESP-IDF query_ptr
+pub const MDNS_PROTO: &str = "_udp";

@@ -163,13 +163,23 @@ pub struct WifiKeyServer {
     remote_stats: Arc<RemoteStats>,
     rigcontrol: Arc<RigControl>,
     stop: Arc<AtomicBool>,
-    handle: JoinHandle<()>,
+    active_session: Arc<Mutex<Option<Arc<WkSession>>>>,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl Drop for WifiKeyServer {
     fn drop(&mut self) {
-        info!("wifikey server dropped stop thread.");
+        info!("wifikey server stopping...");
         self.stop.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.active_session.lock() {
+            if let Some(session) = guard.take() {
+                let _ = session.close();
+            }
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        info!("wifikey server stopped.");
     }
 }
 
@@ -194,6 +204,8 @@ impl WifiKeyServer {
         let stop = Arc::new(AtomicBool::new(false));
         let quit_thread = stop.clone();
         let rig = rigcontrol.clone();
+        let active_session: Arc<Mutex<Option<Arc<WkSession>>>> = Arc::new(Mutex::new(None));
+        let active_session_clone = active_session.clone();
 
         let handle = thread::spawn(move || {
             // Start mDNS service advertisement for LAN discovery
@@ -209,9 +221,18 @@ impl WifiKeyServer {
                 lan_port,
                 None,
             )
-            .expect("Failed to create mDNS service");
+            .expect("Failed to create mDNS service")
+            .enable_addr_auto();
+            let addrs = svc.get_addresses().clone();
+            let fullname = svc.get_fullname().to_string();
             mdns.register(svc).expect("Failed to register mDNS service");
-            info!("mDNS: advertising {} on port {}", config.server_name, lan_port);
+            if addrs.is_empty() {
+                warn!("mDNS: no IP addresses detected! Service may not be discoverable.");
+            }
+            info!(
+                "mDNS: advertising fullname='{}' addrs={:?} port={}",
+                fullname, addrs, lan_port
+            );
 
             loop {
                 if quit_thread.load(Ordering::Relaxed) {
@@ -266,7 +287,21 @@ impl WifiKeyServer {
                 });
 
                 drop(tx);
-                let Ok((session, addr, _listener)) = rx.recv() else {
+                let connection = loop {
+                    if quit_thread.load(Ordering::Relaxed) {
+                        break None;
+                    }
+                    match rx.recv_timeout(std::time::Duration::from_secs(1)) {
+                        Ok(result) => break Some(result),
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break None,
+                    }
+                };
+                let Some((session, addr, _listener)) = connection else {
+                    if quit_thread.load(Ordering::Relaxed) {
+                        let _ = mdns.shutdown();
+                        break;
+                    }
                     warn!("No connection received, retrying...");
                     continue;
                 };
@@ -285,10 +320,18 @@ impl WifiKeyServer {
                 };
                 info!("Auth. Success.");
                 stat.set_auth_ok(true);
+                {
+                    let mut guard = active_session_clone.lock().unwrap();
+                    *guard = Some(session.clone());
+                }
                 let mesg = WkReceiver::new(session).unwrap();
                 stat.set_peer(&addr.to_string());
                 let remote = RemoteKeyer::new(stat.clone(), rig.clone());
                 remote.run(mesg);
+                {
+                    let mut guard = active_session_clone.lock().unwrap();
+                    *guard = None;
+                }
                 info!("remote keyer disconnected.");
                 stat.set_auth_ok(false);
                 stat.clear_peer();
@@ -300,7 +343,8 @@ impl WifiKeyServer {
             remote_stats,
             rigcontrol,
             stop,
-            handle,
+            active_session,
+            handle: Some(handle),
         })
     }
 
@@ -309,10 +353,5 @@ impl WifiKeyServer {
         self.remote_stats.set_atu_start(true);
         self.rigcontrol.start_atu_with_rigcontrol().unwrap();
         self.remote_stats.set_atu_start(false);
-    }
-
-    #[allow(dead_code)]
-    pub fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
     }
 }

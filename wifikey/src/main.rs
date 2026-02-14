@@ -33,7 +33,10 @@ use std::sync::{Arc, Mutex};
 use log::LevelFilter;
 use log::{error, info, trace, warn};
 use mqttstunclient::MQTTStunClient;
-use wksocket::{response, sleep, tick_count, MessageSND, WkSender, WkSession, MAX_SLOTS};
+use wksocket::{
+    response, sleep, tick_count, MessageSND, WkSender, WkSession, MAX_SLOTS, MDNS_PROTO,
+    MDNS_SERVICE_NAME,
+};
 
 use config::{ConfigManager, WifiProfile};
 use serial_cmd::SerialCommandHandler;
@@ -185,6 +188,11 @@ fn main() -> Result<()> {
         }
     };
 
+    // Initialize mDNS once (keep alive for faster repeated discovery)
+    let mut mdns = EspMdns::take().expect("Failed to init mDNS");
+    let _ = mdns.set_hostname("wifikey-client");
+    info!("mDNS initialized");
+
     // Initialize keyer input using dynamic GPIO
     let key_pin = unsafe { pin_from_num(gpio_config.key_input as i32) };
     let mut keyinput = PinDriver::input(key_pin)?;
@@ -196,6 +204,9 @@ fn main() -> Result<()> {
     // Main keying loop
     run_keying_loop(
         &active_profile,
+        &mut wifi_manager,
+        &profiles,
+        &mut mdns,
         &mut keyinput,
         &button,
         #[cfg(feature = "board_m5atom")]
@@ -222,14 +233,9 @@ fn check_long_press<T: InputPin>(button: &PinDriver<T, Input>, duration_ms: u32)
     held_time >= duration_ms
 }
 
-/// Try mDNS discovery with a 2-second timeout
+/// Try mDNS discovery with a 5-second timeout
 /// Returns the server's socket address if found
-fn try_mdns_discovery(server_name: &str) -> Option<SocketAddr> {
-    let Ok(mut mdns) = EspMdns::take() else {
-        warn!("Failed to take EspMdns");
-        return None;
-    };
-    let _ = mdns.set_hostname("wifikey-client");
+fn try_mdns_discovery(mdns: &mut EspMdns, server_name: &str) -> Option<SocketAddr> {
     let new_qr = || QueryResult {
         instance_name: None, hostname: None, port: 0,
         txt: Vec::new(), addr: Vec::new(),
@@ -237,10 +243,11 @@ fn try_mdns_discovery(server_name: &str) -> Option<SocketAddr> {
     };
     let mut results = [new_qr(), new_qr(), new_qr(), new_qr()];
     let count = mdns.query_ptr(
-        "_wifikey2", "_udp",
-        std::time::Duration::from_secs(2),
+        MDNS_SERVICE_NAME, MDNS_PROTO,
+        std::time::Duration::from_secs(5),
         4, &mut results,
     ).unwrap_or(0);
+    info!("mDNS: query returned {} results", count);
     for r in &results[..count] {
         info!("mDNS: found '{:?}' addr={:?} port={}", r.instance_name, r.addr, r.port);
         if r.instance_name.as_deref() == Some(server_name) {
@@ -258,6 +265,9 @@ fn try_mdns_discovery(server_name: &str) -> Option<SocketAddr> {
 /// Main keying loop - handles connection and keying
 fn run_keying_loop<K: InputPin, B: InputPin>(
     profile: &WifiProfile,
+    wifi_manager: &mut WifiManager,
+    profiles: &[WifiProfile],
+    mdns: &mut EspMdns,
     keyinput: &mut PinDriver<K, Input>,
     button: &PinDriver<B, Input>,
     #[cfg(feature = "board_m5atom")] led: &mut Ws2812Esp32Rmt,
@@ -274,6 +284,19 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
     let mut last_stat: u32 = last_sent;
 
     loop {
+        // Check WiFi connectivity before attempting server discovery
+        if !wifi_manager.is_connected() {
+            warn!("WiFi disconnected! Reconnecting...");
+            match wifi_manager.reconnect(profiles) {
+                Ok(p) => info!("WiFi reconnected to {}", p.ssid),
+                Err(e) => {
+                    error!("WiFi reconnect failed: {e:?}");
+                    sleep(5000);
+                    continue;
+                }
+            }
+        }
+
         // Discover server address via interleaved mDNS + MQTT/STUN
         // mDNS (LAN, fast) → STUN/MQTT (WAN, slower), repeat once
         let discovery_result: Option<(SocketAddr, Option<UdpSocket>)> = 'discovery: {
@@ -281,7 +304,7 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                 // mDNS step (skip if tethering)
                 if !profile.tethering {
                     info!("Discovery round {}: trying mDNS...", round);
-                    if let Some(addr) = try_mdns_discovery(&profile.server_name) {
+                    if let Some(addr) = try_mdns_discovery(mdns, &profile.server_name) {
                         break 'discovery Some((addr, None));
                     }
                 }
@@ -362,6 +385,11 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                 trace!("[{last_stat}] PKT={pkt_count} EDGE={edge_count}");
                 edge_count = 0;
                 pkt_count = 0;
+                // Check WiFi during doze keep-alive
+                if !wifi_manager.is_connected() {
+                    warn!("WiFi lost during doze. Reconnecting...");
+                    break;
+                }
             }
 
             if !dozing && now - last_sent >= PKT_INTERVAL as u32 {
