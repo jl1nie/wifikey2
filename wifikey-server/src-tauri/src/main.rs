@@ -14,6 +14,7 @@ mod server;
 
 use commands::AppState;
 use config::{list_serial_ports, AppConfig};
+use rigcontrol::list_available_scripts;
 use server::{RemoteStats, WiFiKeyConfig, WifiKeyServer};
 
 /// Session statistics returned to frontend
@@ -85,6 +86,12 @@ async fn save_config(state: State<'_, AppState>, new_config: AppConfig) -> Resul
 #[tauri::command]
 fn get_serial_ports() -> Vec<String> {
     list_serial_ports()
+}
+
+/// Get list of available rig scripts
+#[tauri::command]
+fn list_rig_scripts() -> Vec<String> {
+    list_available_scripts()
 }
 
 // ============================================================
@@ -247,6 +254,7 @@ async fn restart_server_internal(
         config.rigcontrol_port.clone(),
         config.keying_port.clone(),
         config.use_rts_for_keying,
+        config.rig_script.clone(),
     ));
 
     // Create new server
@@ -269,6 +277,7 @@ fn init_server(
         config.rigcontrol_port.clone(),
         config.keying_port.clone(),
         config.use_rts_for_keying,
+        config.rig_script.clone(),
     ));
 
     let server = WifiKeyServer::new(wk_config, remote_stats)
@@ -333,6 +342,7 @@ fn main() {
             esp32_delete_profile,
             esp32_restart,
             esp32_info,
+            list_rig_scripts,
         ])
         .setup(move |app| {
             log::info!("WiFiKey2 starting...");

@@ -15,6 +15,7 @@ const serverPasswordInput = document.getElementById('server-password');
 const rigcontrolPortSelect = document.getElementById('rigcontrol-port');
 const keyingPortSelect = document.getElementById('keying-port');
 const useRtsCheckbox = document.getElementById('use-rts');
+const rigScriptSelect = document.getElementById('rig-script');
 
 // State
 let currentConfig = null;
@@ -46,8 +47,11 @@ function setupSettingsEventListeners() {
 async function openSettings() {
     try {
         currentConfig = await invoke('get_config');
-        const ports = await invoke('get_serial_ports');
-        populateForm(currentConfig, ports);
+        const [ports, scripts] = await Promise.all([
+            invoke('get_serial_ports'),
+            invoke('list_rig_scripts'),
+        ]);
+        populateForm(currentConfig, ports, scripts);
         settingsModal.classList.add('show');
     } catch (error) {
         console.error('Failed to load settings:', error);
@@ -59,12 +63,35 @@ function closeSettings() {
     settingsModal.classList.remove('show');
 }
 
-function populateForm(config, ports) {
+function populateForm(config, ports, scripts) {
     serverNameInput.value = config.server_name || '';
     serverPasswordInput.value = config.server_password || '';
     useRtsCheckbox.checked = config.use_rts_for_keying || false;
     populatePortSelect(rigcontrolPortSelect, ports, config.rigcontrol_port);
     populatePortSelect(keyingPortSelect, ports, config.keying_port);
+    populateScriptSelect(scripts, config.rig_script);
+}
+
+function populateScriptSelect(scripts, currentValue) {
+    while (rigScriptSelect.options.length > 1) {
+        rigScriptSelect.remove(1);
+    }
+    scripts.forEach(script => {
+        const option = document.createElement('option');
+        option.value = script;
+        option.textContent = script;
+        if (script === currentValue) {
+            option.selected = true;
+        }
+        rigScriptSelect.appendChild(option);
+    });
+    if (currentValue && !scripts.includes(currentValue)) {
+        const option = document.createElement('option');
+        option.value = currentValue;
+        option.textContent = `${currentValue} (not found)`;
+        option.selected = true;
+        rigScriptSelect.appendChild(option);
+    }
 }
 
 function populatePortSelect(select, ports, currentValue) {
@@ -101,6 +128,7 @@ async function saveSettings() {
             rigcontrol_port: rigcontrolPortSelect.value,
             keying_port: keyingPortSelect.value,
             use_rts_for_keying: useRtsCheckbox.checked,
+            rig_script: rigScriptSelect.value,
         };
         settingsSave.disabled = true;
         settingsSave.textContent = 'Saving...';

@@ -21,6 +21,7 @@ pub struct WiFiKeyConfig {
     rigcontrol_port: String,
     keying_port: String,
     use_rts_for_keying: bool,
+    pub rig_script: String,
 }
 
 impl WiFiKeyConfig {
@@ -30,6 +31,7 @@ impl WiFiKeyConfig {
         rigcontrol_port: String,
         keying_port: String,
         use_rts_for_keying: bool,
+        rig_script: String,
     ) -> Self {
         Self {
             server_name,
@@ -37,6 +39,7 @@ impl WiFiKeyConfig {
             rigcontrol_port,
             keying_port,
             use_rts_for_keying,
+            rig_script,
         }
     }
 }
@@ -189,6 +192,7 @@ impl WifiKeyServer {
             &config.rigcontrol_port,
             &config.keying_port,
             config.use_rts_for_keying,
+            &config.rig_script,
         ) {
             Ok(rig) => {
                 info!("Serial ports opened: rigcontrol={}, keying={}", config.rigcontrol_port, config.keying_port);

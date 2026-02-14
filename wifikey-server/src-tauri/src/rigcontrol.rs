@@ -1,16 +1,68 @@
 use anyhow::{bail, Context, Result};
-use log::info;
+use log::{info, warn};
+use mlua::prelude::*;
 use serialport::SerialPort;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+/// Lua-accessible serial port wrapper
+#[derive(Clone)]
+struct LuaSerialPort {
+    port: Arc<Mutex<Box<dyn SerialPort>>>,
+}
+
+/// Helper to lock the serial port, converting PoisonError to LuaError
+fn lock_port(port: &Mutex<Box<dyn SerialPort>>) -> LuaResult<std::sync::MutexGuard<'_, Box<dyn SerialPort>>> {
+    port.lock().map_err(|e| LuaError::RuntimeError(format!("serial port lock failed: {}", e)))
+}
+
+impl LuaUserData for LuaSerialPort {
+    fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+        // port:write(data) -> bytes_written
+        methods.add_method("write", |_, this, data: LuaString| {
+            let mut port = lock_port(&this.port)?;
+            let bytes = data.as_bytes();
+            let n = port.write(&*bytes).map_err(LuaError::external)?;
+            Ok(n)
+        });
+
+        // port:read(max_bytes) -> string
+        methods.add_method("read", |lua, this, max_bytes: usize| {
+            let mut port = lock_port(&this.port)?;
+            let mut buf = vec![0u8; max_bytes];
+            let n = port.read(&mut buf).map_err(LuaError::external)?;
+            lua.create_string(&buf[..n])
+        });
+
+        // port:clear_input()
+        methods.add_method("clear_input", |_, this, ()| {
+            let port = lock_port(&this.port)?;
+            port.clear(serialport::ClearBuffer::Input)
+                .map_err(LuaError::external)?;
+            Ok(())
+        });
+    }
+}
+
+struct LuaState {
+    lua: Lua,
+    /// Registry key for the loaded script table (returned by the script's top-level chunk)
+    rig_script: mlua::RegistryKey,
+    /// Keep a reference to the serial port so it stays alive
+    #[allow(dead_code)]
+    port: LuaSerialPort,
+}
+
 pub struct RigControl {
     keying_port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
-    rigcontrol_port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
+    lua_state: Option<Mutex<LuaState>>,
     use_rts_for_keying: bool,
 }
 
+/// Mode enum — Rust側で文字列との変換を担当
 pub enum Mode {
     Lsb,
     Usb,
@@ -29,23 +81,136 @@ pub enum Mode {
     Psk,
 }
 
+impl Mode {
+    pub fn to_str(&self) -> &'static str {
+        match self {
+            Mode::Lsb => "LSB",
+            Mode::Usb => "USB",
+            Mode::CwU => "CW-U",
+            Mode::CwL => "CW-L",
+            Mode::Am => "AM",
+            Mode::AmN => "AM-N",
+            Mode::Fm => "FM",
+            Mode::FmN => "FM-N",
+            Mode::RttyU => "RTTY-U",
+            Mode::RttyL => "RTTY-L",
+            Mode::DataU => "DATA-U",
+            Mode::DataL => "DATA-L",
+            Mode::DataFm => "DATA-FM",
+            Mode::DataFmN => "DATA-FM-N",
+            Mode::Psk => "PSK",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "LSB" => Ok(Mode::Lsb),
+            "USB" => Ok(Mode::Usb),
+            "CW-U" => Ok(Mode::CwU),
+            "CW-L" => Ok(Mode::CwL),
+            "AM" => Ok(Mode::Am),
+            "AM-N" => Ok(Mode::AmN),
+            "FM" => Ok(Mode::Fm),
+            "FM-N" => Ok(Mode::FmN),
+            "RTTY-U" => Ok(Mode::RttyU),
+            "RTTY-L" => Ok(Mode::RttyL),
+            "DATA-U" => Ok(Mode::DataU),
+            "DATA-L" => Ok(Mode::DataL),
+            "DATA-FM" => Ok(Mode::DataFm),
+            "DATA-FM-N" => Ok(Mode::DataFmN),
+            "PSK" => Ok(Mode::Psk),
+            _ => bail!("Unknown mode string: {}", s),
+        }
+    }
+}
+
+/// スクリプト探索: 絶対パス → %APPDATA%/com.wifikey2.server/scripts/ → exe隣のscripts/
+pub fn find_script(script_name: &str) -> Result<PathBuf> {
+    // 絶対パスならそのまま
+    let p = Path::new(script_name);
+    if p.is_absolute() && p.exists() {
+        return Ok(p.to_path_buf());
+    }
+
+    // %APPDATA%/com.wifikey2.server/scripts/
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let appdata_path = PathBuf::from(appdata)
+            .join("com.wifikey2.server")
+            .join("scripts")
+            .join(script_name);
+        if appdata_path.exists() {
+            return Ok(appdata_path);
+        }
+    }
+
+    // exe と同じディレクトリの scripts/
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let exe_path = exe_dir.join("scripts").join(script_name);
+            if exe_path.exists() {
+                return Ok(exe_path);
+            }
+        }
+    }
+
+    bail!(
+        "Rig script '{}' not found in any search path",
+        script_name
+    )
+}
+
+/// スクリプトディレクトリのリストを返す（UI用）
+pub fn list_script_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        dirs.push(
+            PathBuf::from(appdata)
+                .join("com.wifikey2.server")
+                .join("scripts"),
+        );
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            dirs.push(exe_dir.join("scripts"));
+        }
+    }
+
+    dirs
+}
+
+/// 利用可能なスクリプト一覧を返す
+pub fn list_available_scripts() -> Vec<String> {
+    let mut scripts = std::collections::BTreeSet::new();
+    for dir in list_script_dirs() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("lua") {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        scripts.insert(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    scripts.into_iter().collect()
+}
+
 impl RigControl {
-    pub fn new(rigcontrol_port: &str, keying_port: &str, use_rts_for_keying: bool) -> Result<Self> {
+    pub fn new(
+        rigcontrol_port: &str,
+        keying_port: &str,
+        use_rts_for_keying: bool,
+        rig_script: &str,
+    ) -> Result<Self> {
+        // キーイングポートを開く
         let keying_port = Arc::new(Mutex::new(
             serialport::new(keying_port, 115_200)
                 .timeout(Duration::from_micros(10))
                 .open()
                 .with_context(|| format!("failed to open port {} for keying.", &keying_port))?,
-        ));
-        let rigcontrol_port = Arc::new(Mutex::new(
-            serialport::new(rigcontrol_port, 4800)
-                .timeout(Duration::from_millis(100))
-                .stop_bits(serialport::StopBits::Two)
-                .parity(serialport::Parity::None)
-                .open()
-                .with_context(|| {
-                    format!("failed to open port {} for rigcontrol.", &rigcontrol_port)
-                })?,
         ));
         // DTR/RTSを明示的にOFFにする（OSがポートオープン時にONにする場合がある）
         {
@@ -53,10 +218,115 @@ impl RigControl {
             let _ = port.write_data_terminal_ready(false);
             let _ = port.write_request_to_send(false);
         }
+
+        // Luaスクリプトを読み込み、serial_configでリグコントロールポートを開く
+        let lua_state = match Self::init_lua(rig_script, rigcontrol_port) {
+            Ok(state) => {
+                info!("Lua script '{}' loaded successfully", rig_script);
+                Some(Mutex::new(state))
+            }
+            Err(e) => {
+                warn!("Failed to load Lua script '{}': {} - running without rig control", rig_script, e);
+                None
+            }
+        };
+
         Ok(Self {
             keying_port: Some(keying_port),
-            rigcontrol_port: Some(rigcontrol_port),
+            lua_state,
             use_rts_for_keying,
+        })
+    }
+
+    /// Lua VMを初期化し、スクリプトを読み込む
+    fn init_lua(rig_script: &str, rigcontrol_port: &str) -> Result<LuaState> {
+        let script_path = find_script(rig_script)?;
+        let script_source = std::fs::read_to_string(&script_path)
+            .with_context(|| format!("Failed to read script: {:?}", script_path))?;
+
+        // サンドボックス: io/os/debug モジュール除外
+        let lua = Lua::new_with(
+            LuaStdLib::TABLE | LuaStdLib::STRING | LuaStdLib::MATH | LuaStdLib::COROUTINE,
+            LuaOptions::default(),
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to create Lua VM: {}", e))?;
+
+        // グローバル関数: log_info(msg)
+        let log_info = lua
+            .create_function(|_, msg: String| {
+                info!("[lua] {}", msg);
+                Ok(())
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to create log_info: {}", e))?;
+        lua.globals()
+            .set("log_info", log_info)
+            .map_err(|e| anyhow::anyhow!("Failed to set log_info: {}", e))?;
+
+        // グローバル関数: sleep_ms(ms)
+        let sleep_ms = lua
+            .create_function(|_, ms: u64| {
+                sleep(Duration::from_millis(ms));
+                Ok(())
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to create sleep_ms: {}", e))?;
+        lua.globals()
+            .set("sleep_ms", sleep_ms)
+            .map_err(|e| anyhow::anyhow!("Failed to set sleep_ms: {}", e))?;
+
+        // スクリプトを実行してテーブルを取得
+        let rig_table: LuaTable = lua
+            .load(&script_source)
+            .set_name(rig_script)
+            .eval()
+            .map_err(|e| anyhow::anyhow!("Failed to evaluate script '{}': {}", rig_script, e))?;
+
+        // serial_config テーブルからシリアル設定を取得
+        let serial_config: LuaTable = rig_table
+            .get("serial_config")
+            .map_err(|e| anyhow::anyhow!("Script missing 'serial_config' table: {}", e))?;
+
+        let baud: u32 = serial_config.get("baud").unwrap_or(4800);
+        let stop_bits_val: u8 = serial_config.get("stop_bits").unwrap_or(2);
+        let parity_str: String = serial_config.get("parity").unwrap_or_else(|_| "none".to_string());
+        let timeout_ms: u64 = serial_config.get("timeout_ms").unwrap_or(100);
+
+        let stop_bits = match stop_bits_val {
+            1 => serialport::StopBits::One,
+            _ => serialport::StopBits::Two,
+        };
+        let parity = match parity_str.to_lowercase().as_str() {
+            "odd" => serialport::Parity::Odd,
+            "even" => serialport::Parity::Even,
+            _ => serialport::Parity::None,
+        };
+
+        // リグコントロール用シリアルポートを開く
+        let port = Arc::new(Mutex::new(
+            serialport::new(rigcontrol_port, baud)
+                .timeout(Duration::from_millis(timeout_ms))
+                .stop_bits(stop_bits)
+                .parity(parity)
+                .open()
+                .with_context(|| {
+                    format!("failed to open port {} for rigcontrol.", rigcontrol_port)
+                })?,
+        ));
+
+        let lua_port = LuaSerialPort { port };
+
+        // ポートをスクリプトテーブルにセット
+        rig_table
+            .set("port", lua_port.clone())
+            .map_err(|e| anyhow::anyhow!("Failed to set port on rig table: {}", e))?;
+
+        let rig_key = lua
+            .create_registry_value(rig_table)
+            .map_err(|e| anyhow::anyhow!("Failed to store rig table in registry: {}", e))?;
+
+        Ok(LuaState {
+            lua,
+            rig_script: rig_key,
+            port: lua_port,
         })
     }
 
@@ -64,10 +334,66 @@ impl RigControl {
     pub fn dummy() -> Self {
         Self {
             keying_port: None,
-            rigcontrol_port: None,
+            lua_state: None,
             use_rts_for_keying: false,
         }
     }
+
+    /// Lua関数を呼び出すヘルパー（引数なし、戻り値T）
+    fn call_lua<T: FromLua>(&self, func_name: &str) -> Result<T> {
+        let Some(ref lua_state) = self.lua_state else {
+            bail!("rig control not available (no Lua state)")
+        };
+        let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
+            .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
+        let func: LuaFunction = rig_table.get(func_name)
+            .map_err(|e| anyhow::anyhow!("Script missing function '{}': {}", func_name, e))?;
+        let result: T = func.call(rig_table.clone())
+            .map_err(|e| anyhow::anyhow!("Lua '{}' failed: {}", func_name, e))?;
+        Ok(result)
+    }
+
+    /// Lua関数を呼び出すヘルパー（引数1つ、戻り値T）
+    fn call_lua_with<A: IntoLua, T: FromLua>(
+        &self,
+        func_name: &str,
+        arg: A,
+    ) -> Result<T> {
+        let Some(ref lua_state) = self.lua_state else {
+            bail!("rig control not available (no Lua state)")
+        };
+        let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
+            .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
+        let func: LuaFunction = rig_table.get(func_name)
+            .map_err(|e| anyhow::anyhow!("Script missing function '{}': {}", func_name, e))?;
+        let result: T = func.call((rig_table.clone(), arg))
+            .map_err(|e| anyhow::anyhow!("Lua '{}' failed: {}", func_name, e))?;
+        Ok(result)
+    }
+
+    /// Lua関数を呼び出すヘルパー（引数2つ、戻り値T）
+    fn call_lua_with2<A1: IntoLua, A2: IntoLua, T: FromLua>(
+        &self,
+        func_name: &str,
+        arg1: A1,
+        arg2: A2,
+    ) -> Result<T> {
+        let Some(ref lua_state) = self.lua_state else {
+            bail!("rig control not available (no Lua state)")
+        };
+        let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
+            .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
+        let func: LuaFunction = rig_table.get(func_name)
+            .map_err(|e| anyhow::anyhow!("Script missing function '{}': {}", func_name, e))?;
+        let result: T = func.call((rig_table.clone(), arg1, arg2))
+            .map_err(|e| anyhow::anyhow!("Lua '{}' failed: {}", func_name, e))?;
+        Ok(result)
+    }
+
+    // === キーイング (Lua を経由しない、時間クリティカル) ===
 
     #[inline]
     pub fn assert_key(&self, level: bool) {
@@ -90,179 +416,59 @@ impl RigControl {
         }
     }
 
-    fn cat_write(&self, command: &str) -> Result<usize> {
-        info!("cat write {}", command);
-        let Some(ref rigport) = self.rigcontrol_port else {
-            bail!("rig control port not available")
-        };
-        let Ok(ref mut rigport) = rigport.lock() else {
-            bail!("rig control port lock failed")
-        };
-        let n = rigport.write(command.as_bytes())?;
-        Ok(n)
-    }
-
-    fn cat_read(&self, command: &str) -> Result<String> {
-        let Some(ref rigport) = self.rigcontrol_port else {
-            bail!("rig control port not available")
-        };
-        let Ok(mut rigport) = rigport.lock() else {
-            bail!("rig control port lock failed")
-        };
-        rigport.clear(serialport::ClearBuffer::Input)?;
-        let n = rigport.write(command.as_bytes())?;
-        let buf = &mut [0u8; 1024];
-        let m = rigport.read(buf)?;
-        let buf = String::from_utf8_lossy(&buf[..m]).to_string();
-        let Some(idx) = buf.find(&command[..2]) else {
-            bail!("cat read error buffer ={}", buf)
-        };
-        let res = buf[idx..].to_string();
-        info!("cat cmd {}({}) read {}({})", command, n, res, m - idx);
-        Ok(res)
-    }
+    // === CAT 操作 (Lua 経由) ===
 
     #[allow(dead_code)]
     pub fn get_freq(&self, vfoa: bool) -> Result<usize> {
-        let mut cmd = "FA;";
-        if !vfoa {
-            cmd = "FB";
-        }
-
-        let fstr = self.cat_read(cmd)?;
-        let Ok(freq) = fstr[2..11].parse() else {
-            bail!("CAT read freq failed. {}", &fstr[2..11])
-        };
-        Ok(freq)
+        self.call_lua_with("get_freq", vfoa)
     }
 
     #[allow(dead_code)]
     pub fn set_freq(&self, vfoa: bool, freq: usize) -> Result<()> {
-        let freq @ 30_000..=75_000_000 = freq else {
-            bail!("Parameter out of range: freq ={}", freq)
-        };
-
-        let mut vfo = 'A';
-        if !vfoa {
-            vfo = 'B'
-        }
-
-        self.cat_write(&format!("F{}{:0>9};", vfo, freq))?;
+        self.call_lua_with2::<bool, usize, LuaValue>("set_freq", vfoa, freq)?;
         Ok(())
     }
 
     #[allow(dead_code)]
     pub fn get_power(&self) -> Result<usize> {
-        let pstr = self.cat_read("PC;")?;
-        let Ok(pwr) = pstr[2..5].parse() else {
-            bail!("CAT read power failed. {}", &pstr[2..5])
-        };
-        Ok(pwr)
+        self.call_lua("get_power")
     }
 
     #[allow(dead_code)]
     pub fn set_power(&self, power: usize) -> Result<()> {
-        let power @ 5..=100 = power else {
-            bail!("Parameter out of range: power ={}", power)
-        };
-        self.cat_write(&format!("PC{:0>3};", power))?;
+        self.call_lua_with::<usize, LuaValue>("set_power", power)?;
         Ok(())
     }
 
     #[allow(dead_code)]
     pub fn encoder_up(&self, main: bool, step: usize) -> Result<()> {
-        let mut vfo = 0;
-        if !main {
-            vfo = 1;
-        }
-
-        if let step @ 1..=99 = step {
-            self.cat_write(&format!("EU{}{:0>2};", vfo, step))?;
-            return Ok(());
-        };
-
-        bail!("Parameter out of range: step={}", step)
+        self.call_lua_with2::<bool, usize, LuaValue>("encoder_up", main, step)?;
+        Ok(())
     }
 
     #[allow(dead_code)]
     pub fn encoder_down(&self, main: bool, step: usize) -> Result<()> {
-        let mut vfo = 0;
-        if !main {
-            vfo = 1;
-        }
-
-        if let step @ 1..=99 = step {
-            self.cat_write(&format!("ED{}{:0>2};", vfo, step))?;
-            return Ok(());
-        };
-
-        bail!("Parameter out of range: step={}", step)
-    }
-
-    fn str2mode(&self, c: char) -> Result<Mode> {
-        match c {
-            '1' => Ok(Mode::Lsb),
-            '2' => Ok(Mode::Usb),
-            '3' => Ok(Mode::CwU),
-            '4' => Ok(Mode::Fm),
-            '5' => Ok(Mode::Am),
-            '6' => Ok(Mode::RttyL),
-            '7' => Ok(Mode::CwL),
-            '8' => Ok(Mode::DataL),
-            '9' => Ok(Mode::RttyU),
-            'A' => Ok(Mode::DataFm),
-            'B' => Ok(Mode::FmN),
-            'C' => Ok(Mode::DataU),
-            'D' => Ok(Mode::AmN),
-            'E' => Ok(Mode::Psk),
-            'F' => Ok(Mode::DataFmN),
-            _ => bail!("Unknown mode {}", c),
-        }
-    }
-
-    fn mode2str(&self, mode: Mode) -> Result<char> {
-        Ok(match mode {
-            Mode::Lsb => '1',
-            Mode::Usb => '2',
-            Mode::CwU => '3',
-            Mode::Fm => '4',
-            Mode::Am => '5',
-            Mode::RttyL => '6',
-            Mode::CwL => '7',
-            Mode::DataL => '8',
-            Mode::RttyU => '9',
-            Mode::DataFm => 'A',
-            Mode::FmN => 'B',
-            Mode::DataU => 'C',
-            Mode::AmN => 'D',
-            Mode::Psk => 'E',
-            Mode::DataFmN => 'F',
-        })
+        self.call_lua_with2::<bool, usize, LuaValue>("encoder_down", main, step)?;
+        Ok(())
     }
 
     #[allow(dead_code)]
     pub fn set_mode(&self, mode: Mode) -> Result<()> {
-        let modec = self.mode2str(mode)?;
-        self.cat_write(&format!("MD0{};", modec))?;
+        self.call_lua_with::<&str, LuaValue>("set_mode", mode.to_str())?;
         Ok(())
     }
 
     #[allow(dead_code)]
     pub fn get_mode(&self) -> Result<Mode> {
-        let mstr = self.cat_read("MD0;")?;
-        let Ok(mode) = self.str2mode(mstr.chars().nth(3).unwrap()) else {
-            bail!("CAT read fail. {}", mstr)
-        };
-        Ok(mode)
+        let mode_str: String = self.call_lua("get_mode")?;
+        Mode::from_str(&mode_str)
     }
 
     pub fn read_swr(&self) -> Result<usize> {
-        let mstr = self.cat_read("RM6;")?;
-        let Ok(swr) = mstr[3..6].parse() else {
-            bail!("CAT read fail. swr={}", mstr)
-        };
-        Ok(swr)
+        self.call_lua("read_swr")
     }
+
+    // === ATU 操作 (オーケストレーションはRust、個々のCAT操作はLua経由) ===
 
     pub fn start_atu(&self) {
         self.assert_atu(true);

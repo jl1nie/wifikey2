@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+fn default_rig_script() -> String {
+    "yaesu_ft891.lua".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub server_name: String,
@@ -10,6 +14,8 @@ pub struct AppConfig {
     pub rigcontrol_port: String,
     pub keying_port: String,
     pub use_rts_for_keying: bool,
+    #[serde(default = "default_rig_script")]
+    pub rig_script: String,
 }
 
 impl Default for AppConfig {
@@ -20,6 +26,7 @@ impl Default for AppConfig {
             rigcontrol_port: "COM5".to_string(),
             keying_port: "COM6".to_string(),
             use_rts_for_keying: true,
+            rig_script: default_rig_script(),
         }
     }
 }
