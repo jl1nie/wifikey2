@@ -1,22 +1,127 @@
 use anyhow::{bail, Context, Result};
-use log::{info, warn};
+use log::{info, trace, warn};
 use mlua::prelude::*;
 use serialport::SerialPort;
+use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-/// Lua-accessible serial port wrapper
-#[derive(Clone)]
-struct LuaSerialPort {
-    port: Arc<Mutex<Box<dyn SerialPort>>>,
+const SERIAL_BUFFER_SIZE: usize = 16384;
+
+/// バックグラウンドリーダーのストップハンドル（Drop時にBGスレッドを停止）
+struct ReaderHandle {
+    stop: Arc<AtomicBool>,
 }
 
-/// Helper to lock the serial port, converting PoisonError to LuaError
-fn lock_port(port: &Mutex<Box<dyn SerialPort>>) -> LuaResult<std::sync::MutexGuard<'_, Box<dyn SerialPort>>> {
-    port.lock().map_err(|e| LuaError::RuntimeError(format!("serial port lock failed: {}", e)))
+impl Drop for ReaderHandle {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Lua-accessible serial port wrapper with background read buffering
+///
+/// バックグラウンドスレッドがシリアルポートから常時読み取り、
+/// VecDequeバッファに蓄積する。Luaはバッファから読み取る。
+#[derive(Clone)]
+struct LuaSerialPort {
+    write_port: Arc<Mutex<Box<dyn SerialPort>>>,
+    buffer: Arc<Mutex<VecDeque<u8>>>,
+    #[allow(dead_code)]
+    stop: Arc<AtomicBool>,
+}
+
+impl LuaSerialPort {
+    /// シリアルポートをラップし、バックグラウンドリーダーを起動する
+    fn new(port: Box<dyn SerialPort>) -> Result<(Self, ReaderHandle)> {
+        let mut read_port = port
+            .try_clone()
+            .context("failed to clone serial port for background reader")?;
+        // BGスレッドの読み取りタイムアウトを短くする（応答性のため）
+        let _ = read_port.set_timeout(Duration::from_millis(50));
+
+        let write_port = Arc::new(Mutex::new(port));
+        let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(SERIAL_BUFFER_SIZE)));
+        let stop = Arc::new(AtomicBool::new(false));
+        let reader_handle = ReaderHandle { stop: stop.clone() };
+
+        // バックグラウンドリーダースレッド
+        let bg_buffer = buffer.clone();
+        let bg_stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            loop {
+                if bg_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                match read_port.read(&mut buf) {
+                    Ok(0) => {}
+                    Ok(n) => {
+                        trace!("[serial BG] {} bytes: {}", n, hex_dump(&buf[..n]));
+                        let mut ring = bg_buffer.lock().unwrap();
+                        ring.extend(&buf[..n]);
+                        while ring.len() > SERIAL_BUFFER_SIZE {
+                            ring.pop_front();
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(e) => {
+                        info!("[serial BG] read error: {}", e);
+                        break;
+                    }
+                }
+            }
+            info!("[serial BG] background reader stopped");
+        });
+
+        Ok((
+            LuaSerialPort {
+                write_port,
+                buffer,
+                stop,
+            },
+            reader_handle,
+        ))
+    }
+}
+
+/// Lua-accessible rig control wrapper (keying/ATU pin control)
+#[derive(Clone)]
+struct LuaRigControl {
+    keying_port: Arc<Mutex<Box<dyn SerialPort>>>,
+    use_rts_for_keying: bool,
+}
+
+impl LuaUserData for LuaRigControl {
+    fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+        // ctl:assert_key(bool)
+        methods.add_method("assert_key", |_, this, level: bool| {
+            let mut port = this.keying_port.lock()
+                .map_err(|e| LuaError::RuntimeError(format!("keying port lock failed: {}", e)))?;
+            if this.use_rts_for_keying {
+                port.write_request_to_send(level).map_err(LuaError::external)?;
+            } else {
+                port.write_data_terminal_ready(level).map_err(LuaError::external)?;
+            }
+            Ok(())
+        });
+
+        // ctl:assert_atu(bool)
+        methods.add_method("assert_atu", |_, this, level: bool| {
+            let mut port = this.keying_port.lock()
+                .map_err(|e| LuaError::RuntimeError(format!("keying port lock failed: {}", e)))?;
+            if !this.use_rts_for_keying {
+                port.write_request_to_send(level).map_err(LuaError::external)?;
+            } else {
+                port.write_data_terminal_ready(level).map_err(LuaError::external)?;
+            }
+            Ok(())
+        });
+    }
 }
 
 /// バイト列を hex + ASCII で表示するデバッグ用ヘルパー
@@ -33,36 +138,105 @@ impl LuaUserData for LuaSerialPort {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         // port:write(data) -> bytes_written
         methods.add_method("write", |_, this, data: LuaString| {
-            let mut port = lock_port(&this.port)?;
+            let mut port = this.write_port.lock()
+                .map_err(|e| LuaError::RuntimeError(format!("write port lock failed: {}", e)))?;
             let bytes = data.as_bytes();
             info!("[serial TX] {} bytes: {}", bytes.len(), hex_dump(&*bytes));
-            let n = port.write(&*bytes).map_err(|e| {
-                info!("[serial TX ERROR] {}", e);
+            port.write_all(&*bytes).map_err(|e| {
+                info!("[serial TX ERROR] write_all: {}", e);
                 LuaError::external(e)
             })?;
+            port.flush().map_err(|e| {
+                info!("[serial TX ERROR] flush: {}", e);
+                LuaError::external(e)
+            })?;
+            let n = bytes.len();
             info!("[serial TX] wrote {} bytes", n);
             Ok(n)
         });
 
-        // port:read(max_bytes) -> string
-        methods.add_method("read", |lua, this, max_bytes: usize| {
-            let mut port = lock_port(&this.port)?;
-            let mut buf = vec![0u8; max_bytes];
-            info!("[serial RX] reading up to {} bytes...", max_bytes);
-            let n = port.read(&mut buf).map_err(|e| {
-                info!("[serial RX ERROR] {}", e);
-                LuaError::external(e)
-            })?;
-            info!("[serial RX] {} bytes: {}", n, hex_dump(&buf[..n]));
-            lua.create_string(&buf[..n])
+        // port:read(max_bytes, timeout_ms) -> string
+        // BGバッファからmax_bytesまで読み取る
+        methods.add_method("read", |lua, this, (max_bytes, timeout_ms): (usize, u64)| {
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+            let mut result = Vec::new();
+            info!("[serial RX] read up to {} bytes, timeout={}ms", max_bytes, timeout_ms);
+            loop {
+                {
+                    let mut ring = this.buffer.lock()
+                        .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
+                    let available = ring.len().min(max_bytes - result.len());
+                    if available > 0 {
+                        result.extend(ring.drain(..available));
+                    }
+                }
+                if result.len() >= max_bytes || Instant::now() >= deadline {
+                    break;
+                }
+                if result.is_empty() {
+                    sleep(Duration::from_millis(1));
+                } else {
+                    sleep(Duration::from_millis(5));
+                }
+            }
+            info!("[serial RX] total {} bytes: {}", result.len(), hex_dump(&result));
+            lua.create_string(&result)
+        });
+
+        // port:read_until(delimiter, timeout_ms) -> string
+        // BGバッファからdelimiterが見つかるまで読み取る
+        methods.add_method("read_until", |lua, this, (delimiter, timeout_ms): (LuaString, u64)| {
+            let delim = delimiter.as_bytes().to_vec();
+            if delim.is_empty() {
+                return Err(LuaError::RuntimeError("delimiter must not be empty".to_string()));
+            }
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+            let mut result = Vec::new();
+            info!("[serial RX] read_until delim={} timeout={}ms", hex_dump(&delim), timeout_ms);
+            loop {
+                {
+                    let mut ring = this.buffer.lock()
+                        .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
+                    while let Some(byte) = ring.pop_front() {
+                        result.push(byte);
+                        if result.len() >= delim.len()
+                            && result[result.len() - delim.len()..] == delim[..]
+                        {
+                            info!("[serial RX] read_until found delimiter, {} bytes: {}", result.len(), hex_dump(&result));
+                            return lua.create_string(&result);
+                        }
+                    }
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                sleep(Duration::from_millis(1));
+            }
+            info!("[serial RX] read_until timeout, {} bytes: {}", result.len(), hex_dump(&result));
+            lua.create_string(&result)
         });
 
         // port:clear_input()
+        // BGバッファとOSバッファの両方をクリアする
         methods.add_method("clear_input", |_, this, ()| {
-            let port = lock_port(&this.port)?;
             info!("[serial] clear_input");
-            port.clear(serialport::ClearBuffer::Input)
-                .map_err(LuaError::external)?;
+            {
+                let mut ring = this.buffer.lock()
+                    .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
+                ring.clear();
+            }
+            {
+                let port = this.write_port.lock()
+                    .map_err(|e| LuaError::RuntimeError(format!("write port lock failed: {}", e)))?;
+                let _ = port.clear(serialport::ClearBuffer::Input);
+            }
+            // BGスレッドが読み取り中のデータを待ってからもう一度クリア
+            sleep(Duration::from_millis(10));
+            {
+                let mut ring = this.buffer.lock()
+                    .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
+                ring.clear();
+            }
             Ok(())
         });
     }
@@ -75,6 +249,9 @@ struct LuaState {
     /// Keep a reference to the serial port so it stays alive
     #[allow(dead_code)]
     port: LuaSerialPort,
+    /// Keep reader handle alive so background thread keeps running
+    #[allow(dead_code)]
+    _reader_handle: ReaderHandle,
 }
 
 pub struct RigControl {
@@ -241,7 +418,7 @@ impl RigControl {
         }
 
         // Luaスクリプトを読み込み、serial_configでリグコントロールポートを開く
-        let lua_state = match Self::init_lua(rig_script, rigcontrol_port) {
+        let lua_state = match Self::init_lua(rig_script, rigcontrol_port, Some(&keying_port), use_rts_for_keying) {
             Ok(state) => {
                 info!("Lua script '{}' loaded successfully", rig_script);
                 Some(Mutex::new(state))
@@ -260,7 +437,12 @@ impl RigControl {
     }
 
     /// Lua VMを初期化し、スクリプトを読み込む
-    fn init_lua(rig_script: &str, rigcontrol_port: &str) -> Result<LuaState> {
+    fn init_lua(
+        rig_script: &str,
+        rigcontrol_port: &str,
+        keying_port: Option<&Arc<Mutex<Box<dyn SerialPort>>>>,
+        use_rts_for_keying: bool,
+    ) -> Result<LuaState> {
         let script_path = find_script(rig_script)?;
         info!("[lua] Loading script from: {:?}", script_path);
         let script_source = std::fs::read_to_string(&script_path)
@@ -296,6 +478,18 @@ impl RigControl {
             .set("sleep_ms", sleep_ms)
             .map_err(|e| anyhow::anyhow!("Failed to set sleep_ms: {}", e))?;
 
+        // rig_control グローバルを登録 (keying/ATUピン制御)
+        if let Some(kp) = keying_port {
+            let lua_rig_control = LuaRigControl {
+                keying_port: kp.clone(),
+                use_rts_for_keying,
+            };
+            lua.globals()
+                .set("rig_control", lua_rig_control)
+                .map_err(|e| anyhow::anyhow!("Failed to set rig_control: {}", e))?;
+            info!("[lua] rig_control global registered");
+        }
+
         // スクリプトを実行してテーブルを取得
         let rig_table: LuaTable = lua
             .load(&script_source)
@@ -328,18 +522,16 @@ impl RigControl {
         };
 
         // リグコントロール用シリアルポートを開く
-        let port = Arc::new(Mutex::new(
-            serialport::new(rigcontrol_port, baud)
-                .timeout(Duration::from_millis(timeout_ms))
-                .stop_bits(stop_bits)
-                .parity(parity)
-                .open()
-                .with_context(|| {
-                    format!("failed to open port {} for rigcontrol.", rigcontrol_port)
-                })?,
-        ));
+        let port_box = serialport::new(rigcontrol_port, baud)
+            .timeout(Duration::from_millis(timeout_ms))
+            .stop_bits(stop_bits)
+            .parity(parity)
+            .open()
+            .with_context(|| {
+                format!("failed to open port {} for rigcontrol.", rigcontrol_port)
+            })?;
 
-        let lua_port = LuaSerialPort { port };
+        let (lua_port, reader_handle) = LuaSerialPort::new(port_box)?;
 
         // ポートをスクリプトテーブルにセット
         rig_table
@@ -354,6 +546,7 @@ impl RigControl {
             lua,
             rig_script: rig_key,
             port: lua_port,
+            _reader_handle: reader_handle,
         })
     }
 
@@ -531,7 +724,15 @@ impl RigControl {
     }
 
     pub fn start_atu_with_rigcontrol(&self) -> Result<usize> {
-        info!("[ATU] start_atu_with_rigcontrol begin");
+        // Luaにstart_atuアクションがあればそちらにディスパッチ
+        if self.has_action("start_atu") {
+            info!("[ATU] dispatching to Lua action 'start_atu'");
+            self.run_action("start_atu")?;
+            return Ok(0);
+        }
+
+        // Rustフォールバック
+        info!("[ATU] start_atu_with_rigcontrol begin (Rust fallback)");
         let saved_power = self.get_power()?;
         info!("[ATU] saved power = {}", saved_power);
         let saved_mode = self.get_mode()?;
@@ -575,5 +776,73 @@ impl RigControl {
         self.set_power(saved_power)?;
 
         Ok(swr)
+    }
+
+    /// スクリプトが宣言するアクション一覧を取得
+    pub fn get_actions(&self) -> Vec<(String, String)> {
+        let Some(ref lua_state) = self.lua_state else {
+            return Vec::new();
+        };
+        let Ok(state) = lua_state.lock() else {
+            return Vec::new();
+        };
+        let Ok(rig_table) = state.lua.registry_value::<LuaTable>(&state.rig_script) else {
+            return Vec::new();
+        };
+        let Ok(actions) = rig_table.get::<LuaTable>("actions") else {
+            return Vec::new();
+        };
+        let mut result = Vec::new();
+        if let Ok(pairs) = actions.pairs::<String, LuaTable>().collect::<Result<Vec<_>, _>>() {
+            for (name, action_table) in pairs {
+                let label: String = action_table.get("label").unwrap_or_else(|_| name.clone());
+                result.push((name, label));
+            }
+        }
+        result.sort_by(|a, b| a.0.cmp(&b.0));
+        result
+    }
+
+    /// 指定アクションがスクリプトに定義されているかチェック
+    fn has_action(&self, name: &str) -> bool {
+        let Some(ref lua_state) = self.lua_state else {
+            return false;
+        };
+        let Ok(state) = lua_state.lock() else {
+            return false;
+        };
+        let Ok(rig_table) = state.lua.registry_value::<LuaTable>(&state.rig_script) else {
+            return false;
+        };
+        let Ok(actions) = rig_table.get::<LuaTable>("actions") else {
+            return false;
+        };
+        actions.get::<LuaTable>(name).is_ok()
+    }
+
+    /// 指定アクションを実行: rig.actions[name].fn(rig_table, rig_control)
+    pub fn run_action(&self, name: &str) -> Result<()> {
+        info!("[action] running '{}'", name);
+        let Some(ref lua_state) = self.lua_state else {
+            bail!("rig control not available (no Lua state)")
+        };
+        let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
+            .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
+        let actions: LuaTable = rig_table.get("actions")
+            .map_err(|e| anyhow::anyhow!("Script has no 'actions' table: {}", e))?;
+        let action_table: LuaTable = actions.get(name)
+            .map_err(|e| anyhow::anyhow!("Action '{}' not found: {}", name, e))?;
+        let func: LuaFunction = action_table.get("fn")
+            .map_err(|e| anyhow::anyhow!("Action '{}' has no 'fn': {}", name, e))?;
+
+        // rig_control グローバルを取得して渡す
+        let rig_control: LuaValue = state.lua.globals().get("rig_control")
+            .unwrap_or(LuaValue::Nil);
+
+        func.call::<LuaValue>((rig_table.clone(), rig_control))
+            .map_err(|e| anyhow::anyhow!("Action '{}' failed: {}", name, e))?;
+        info!("[action] '{}' completed", name);
+        Ok(())
     }
 }

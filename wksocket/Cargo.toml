@@ -10,7 +10,6 @@ anyhow = "1"
 bytes = "1.1"
 kcp = "0.5"
 log = { version = "0.4", default-features = false }
-time = "0.3"
 rand = "0.9"
 md-5 = "0.10"
 subtle = "2.5"

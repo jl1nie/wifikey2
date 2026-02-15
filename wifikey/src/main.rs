@@ -372,6 +372,13 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
             continue;
         };
 
+        // Reset timestamps after discovery/connect/auth to avoid stale values
+        // in the first SendPacket (which would cause bogus RTT on the server)
+        last_sent = tick_count();
+        last_stat = last_sent;
+        dozing = false;
+        sleep_count = 0;
+
         loop {
             sleep(1);
             let now = tick_count();

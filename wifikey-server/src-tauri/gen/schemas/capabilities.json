@@ -1,1 +1,1 @@
-{}
+{"default":{"identifier":"default","description":"Default capabilities for WiFiKey2","local":true,"windows":["main"],"permissions":["core:default","shell:allow-open","log:default","core:event:default"]}}

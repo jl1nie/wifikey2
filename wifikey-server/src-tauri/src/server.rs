@@ -355,7 +355,19 @@ impl WifiKeyServer {
     #[allow(dead_code)]
     pub fn start_atu(&self) {
         self.remote_stats.set_atu_start(true);
-        self.rigcontrol.start_atu_with_rigcontrol().unwrap();
+        if let Err(e) = self.rigcontrol.start_atu_with_rigcontrol() {
+            log::error!("[ATU] start_atu_with_rigcontrol failed: {}", e);
+        }
         self.remote_stats.set_atu_start(false);
+    }
+
+    /// アクション一覧を取得
+    pub fn get_rig_actions(&self) -> Vec<(String, String)> {
+        self.rigcontrol.get_actions()
+    }
+
+    /// 指定アクションを実行
+    pub fn run_rig_action(&self, name: &str) -> anyhow::Result<()> {
+        self.rigcontrol.run_action(name)
     }
 }

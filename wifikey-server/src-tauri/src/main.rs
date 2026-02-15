@@ -50,13 +50,43 @@ fn get_session_stats(state: State<'_, AppState>) -> SessionStats {
 /// Start ATU tuning
 #[tauri::command]
 async fn start_atu(state: State<'_, AppState>) -> Result<(), String> {
-    let server_guard = state.server.lock().await;
-    if let Some(server) = server_guard.as_ref() {
+    let server = {
+        let guard = state.server.lock().await;
+        guard.as_ref().cloned().ok_or("Server not running")?
+    };
+    tokio::task::spawn_blocking(move || {
         server.start_atu();
         Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// Get list of rig actions defined in Lua script
+#[tauri::command]
+async fn get_rig_actions(state: State<'_, AppState>) -> Result<Vec<(String, String)>, String> {
+    let server_guard = state.server.lock().await;
+    if let Some(server) = server_guard.as_ref() {
+        Ok(server.get_rig_actions())
     } else {
-        Err("Server not running".to_string())
+        Ok(Vec::new())
     }
+}
+
+/// Run a named rig action
+/// Lua アクションは同期的に長時間ブロックするため spawn_blocking で実行する
+#[tauri::command]
+async fn run_rig_action(state: State<'_, AppState>, name: String) -> Result<(), String> {
+    // Arc をクローンしてすぐにロックを解放
+    let server = {
+        let guard = state.server.lock().await;
+        guard.as_ref().cloned().ok_or("Server not running")?
+    };
+    tokio::task::spawn_blocking(move || {
+        server.run_rig_action(&name).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Get current configuration
@@ -324,6 +354,8 @@ fn main() {
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(log::LevelFilter::Info)
+                .level_for("mqttstunclient", log::LevelFilter::Warn)
+                .level_for("rumqttc", log::LevelFilter::Warn)
                 .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
                 .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("wifikey2.log".into()) }))
                 .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview))
@@ -333,6 +365,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_session_stats,
             start_atu,
+            get_rig_actions,
+            run_rig_action,
             get_config,
             save_config,
             get_serial_ports,

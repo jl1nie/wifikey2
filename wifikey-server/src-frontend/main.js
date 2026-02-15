@@ -18,6 +18,7 @@ const logContent = document.getElementById('log-content');
 // State
 let isLogCollapsed = false;
 let updateInterval = null;
+let rigActions = []; // [{name, label}]
 
 // Initialize application
 document.addEventListener('DOMContentLoaded', () => {
@@ -26,13 +27,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function initializeApp() {
     setupEventListeners();
+    await loadRigActions();
     startStatsUpdate();
     setupLogListener();
     console.log('WiFiKey2 initialized');
 }
 
 function setupEventListeners() {
-    atuBtn.addEventListener('click', handleStartATU);
     logToggle.addEventListener('click', toggleLog);
 
     const esp32Btn = document.getElementById('esp32-btn');
@@ -42,6 +43,50 @@ function setupEventListeners() {
                 window.openEsp32Modal();
             }
         });
+    }
+}
+
+// Load rig actions from Lua script and generate buttons
+async function loadRigActions() {
+    const controlsSection = document.querySelector('.controls');
+    try {
+        const actions = await invoke('get_rig_actions');
+        rigActions = actions.map(([name, label]) => ({ name, label }));
+    } catch (error) {
+        console.error('Failed to get rig actions:', error);
+        rigActions = [];
+    }
+
+    if (rigActions.length > 0) {
+        // Remove default ATU button, generate dynamic buttons
+        controlsSection.innerHTML = '';
+        for (const action of rigActions) {
+            const btn = document.createElement('button');
+            btn.className = 'btn btn-primary';
+            btn.textContent = action.label;
+            btn.dataset.action = action.name;
+            btn.addEventListener('click', () => handleRunAction(action.name, btn));
+            controlsSection.appendChild(btn);
+        }
+    } else {
+        // Fallback: keep the default ATU button
+        atuBtn.addEventListener('click', handleStartATU);
+    }
+}
+
+// Run a named action
+async function handleRunAction(name, btn) {
+    try {
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+        await invoke('run_rig_action', { name });
+        addLogEntry(`Action '${name}' completed`, 'info');
+    } catch (error) {
+        console.error(`Action '${name}' failed:`, error);
+        addLogEntry(`Action '${name}' failed: ${error}`, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.style.opacity = '';
     }
 }
 
@@ -66,12 +111,15 @@ async function updateStats() {
             appTitle.classList.remove('active');
         }
 
-        if (stats.atu_active) {
-            atuBtn.disabled = true;
-            atuBtn.textContent = 'ATU Running...';
-        } else {
-            atuBtn.disabled = false;
-            atuBtn.textContent = 'Start ATU';
+        if (rigActions.length === 0) {
+            // Fallback ATU button
+            if (stats.atu_active) {
+                atuBtn.disabled = true;
+                atuBtn.textContent = 'ATU Running...';
+            } else {
+                atuBtn.disabled = false;
+                atuBtn.textContent = 'Start ATU';
+            }
         }
     } catch (error) {
         console.error('Failed to get stats:', error);

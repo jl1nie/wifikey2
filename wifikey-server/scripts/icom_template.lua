@@ -31,7 +31,7 @@ end
 
 -- CI-V応答読み取り
 local function civ_read(self)
-    local buf = self.port:read(1024)
+    local buf = self.port:read_until("\xFD", 2000)
     -- エコーバックをスキップし、リグからの応答を探す
     -- 応答は FE FE E0 <rig_addr> ... FD
     local i = 1
@@ -175,5 +175,69 @@ function rig:read_swr()
     local data = resp:sub(7, 8)
     return bcd_to_freq(data)
 end
+
+-- ==============================
+-- アクション定義
+-- ==============================
+
+local current_freq = nil  -- VM生存中ずっと保持
+
+rig.actions = {
+    start_atu = {
+        label = "Start ATU",
+        fn = function(self, ctl)
+            log_info("[ATU/Lua] start_atu begin (ICOM)")
+            local saved_power = self:get_power()
+            local saved_mode = self:get_mode()
+
+            self:set_mode("CW-U")
+            self:set_power(10)
+            sleep_ms(500)
+
+            ctl:assert_key(true)
+            sleep_ms(100)
+
+            ctl:assert_atu(true)
+            sleep_ms(500)
+            ctl:assert_atu(false)
+
+            local swr_count = 0
+            for i = 1, 20 do
+                sleep_ms(100)
+                local ok, swr = pcall(function() return self:read_swr() end)
+                if not ok then break end
+                log_info(string.format("[ATU] SWR [%d] = %d (good: %d/3)", i, swr, swr_count))
+                if swr < 50 then
+                    swr_count = swr_count + 1
+                else
+                    swr_count = 0
+                end
+                if swr_count >= 3 then break end
+            end
+
+            ctl:assert_key(false)
+            sleep_ms(500)
+            self:set_mode(saved_mode)
+            self:set_power(saved_power)
+            log_info("[ATU/Lua] start_atu completed")
+        end,
+    },
+    freq_up = {
+        label = "+",
+        fn = function(self, ctl)
+            if not current_freq then current_freq = self:get_freq(true) end
+            current_freq = current_freq + 100
+            self:set_freq(true, current_freq)
+        end,
+    },
+    freq_down = {
+        label = "-",
+        fn = function(self, ctl)
+            if not current_freq then current_freq = self:get_freq(true) end
+            current_freq = current_freq - 100
+            self:set_freq(true, current_freq)
+        end,
+    },
+}
 
 return rig

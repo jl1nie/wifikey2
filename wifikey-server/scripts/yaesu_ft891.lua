@@ -58,7 +58,7 @@ local function cat_read(self, command)
     self.port:clear_input()
     local n = self.port:write(command)
     log_info("[CAT RX] wrote " .. n .. " bytes, reading response...")
-    local buf = self.port:read(1024)
+    local buf = self.port:read_until(";", 500)
     log_info("[CAT RX] raw response: len=" .. #buf .. " hex=" .. hex_str(buf) .. " ascii='" .. buf .. "'")
     local prefix = command:sub(1, 2)
     log_info("[CAT RX] looking for prefix='" .. prefix .. "'")
@@ -175,5 +175,91 @@ function rig:read_swr()
     log_info("[read_swr] swr=" .. swr)
     return swr
 end
+
+-- ==============================
+-- アクション定義
+-- ==============================
+
+local current_freq = nil  -- VM生存中ずっと保持
+
+rig.actions = {
+    start_atu = {
+        label = "Start ATU",
+        fn = function(self, ctl)
+            log_info("[ATU] === ATU tuning start ===")
+
+            log_info("[ATU] 1/6 Saving current settings...")
+            local saved_power = self:get_power()
+            local saved_mode = self:get_mode()
+            log_info("[ATU] saved: mode=" .. saved_mode .. " power=" .. saved_power .. "W")
+
+            log_info("[ATU] 2/6 Setting CW-U 10W...")
+            self:set_mode("CW-U")
+            self:set_power(10)
+            sleep_ms(500)
+
+            log_info("[ATU] 3/6 Key ON, sending ATU pulse...")
+            ctl:assert_key(true)
+            local ok, err = pcall(function()
+                sleep_ms(100)
+                ctl:assert_atu(true)
+                sleep_ms(500)
+                ctl:assert_atu(false)
+
+                log_info("[ATU] 4/6 Monitoring SWR...")
+                local swr_count = 0
+                for i = 1, 20 do
+                    sleep_ms(100)
+                    local rok, swr = pcall(function() return self:read_swr() end)
+                    if not rok then
+                        log_info("[ATU] SWR read error: " .. tostring(swr))
+                        break
+                    end
+                    log_info(string.format("[ATU] SWR [%d] = %d (good: %d/3)", i, swr, swr_count))
+                    if swr < 50 then
+                        swr_count = swr_count + 1
+                    else
+                        swr_count = 0  -- 連続カウントリセット
+                    end
+                    if swr_count >= 3 then
+                        log_info("[ATU] SWR converged!")
+                        break
+                    end
+                end
+            end)
+
+            log_info("[ATU] 5/6 Key OFF")
+            ctl:assert_key(false)
+
+            log_info("[ATU] 6/6 Restoring mode=" .. saved_mode .. " power=" .. saved_power .. "W...")
+            sleep_ms(500)
+            pcall(function() self:set_mode(saved_mode) end)
+            pcall(function() self:set_power(saved_power) end)
+
+            if ok then
+                log_info("[ATU] === ATU tuning complete ===")
+            else
+                log_info("[ATU] === ATU tuning FAILED: " .. tostring(err) .. " ===")
+                error(err)
+            end
+        end,
+    },
+    freq_up = {
+        label = "+",
+        fn = function(self, ctl)
+            if not current_freq then current_freq = self:get_freq(true) end
+            current_freq = current_freq + 100
+            self:set_freq(true, current_freq)
+        end,
+    },
+    freq_down = {
+        label = "-",
+        fn = function(self, ctl)
+            if not current_freq then current_freq = self:get_freq(true) end
+            current_freq = current_freq - 100
+            self:set_freq(true, current_freq)
+        end,
+    },
+}
 
 return rig
