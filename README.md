@@ -41,8 +41,8 @@ This project consists of an ESP32-based wireless CW paddle and a server applicat
 │  ┌──────────────────┐       │                    │     ┌──────────────────┐ │
 │  │  wifikey          │       │    KCP (UDP)        │     │  wifikey-server  │ │
 │  │  (ESP32 Client)   │◄──────┼────────────────────┼────►│  (PC / Tauri)    │ │
-│  │                   │       │  Encrypted P2P      │     │                  │ │
-│  │  - Paddle input   │       │  ChaCha20-Poly1305  │     │  - Rig control   │ │
+│  │                   │       │                    │     │                  │ │
+│  │  - Paddle input   │       │                    │     │  - Rig control   │ │
 │  │  - mDNS discovery │       │                    │     │  - Lua CAT       │ │
 │  │  - LED status     │       │   or LAN direct     │     │  - mDNS publish  │ │
 │  │  - Web config UI  │       │                    │     │  - GUI dashboard │ │
@@ -110,7 +110,7 @@ With wifikey-esp32-server, remote keying is possible without a PC. The ESP32 ser
        │◄─────────────────────────┤◄──PUBLISH {local,stun}───┤
        │                          │                          │
        ╔══════════════════════════╧══════════════════════════╗
-       ║  UDP Hole Punching → KCP Encrypted Session          ║
+       ║  UDP Hole Punching → KCP Session                      ║
        ║  (LAN-local address prioritized if available)       ║
        ╚═════════════════════════════════════════════════════╝
 ```
@@ -423,7 +423,7 @@ When both devices are on the same LAN, **mDNS** (`_wifikey2._udp.local.`) is use
 | kcp | 0.5 | Reliable UDP transport |
 | rumqttc | 0.24 | MQTT client |
 | mdns-sd | 0.11 | mDNS service discovery |
-| chacha20poly1305 | 0.10 | Authenticated encryption |
+| chacha20poly1305 | 0.10 | MQTT signaling encryption |
 
 #### Platform-specific Requirements
 
@@ -751,7 +751,7 @@ The server app displays real-time statistics:
 - **NAT Traversal**: Connection via MQTT + STUN
 - **mDNS Discovery**: Zero-configuration LAN discovery (`_wifikey2._udp`)
 - **Same LAN Support**: Local IP priority for low latency
-- **Encryption**: ChaCha20-Poly1305 authenticated encryption
+- **Signaling Encryption**: ChaCha20-Poly1305 encrypted MQTT signaling
 - **ATU Control**: Antenna tuner activation
 - **Lua CAT Scripting**: Extensible rig control via Lua scripts
 - **GUI Settings**: Serial port selection and settings (Tauri version)
