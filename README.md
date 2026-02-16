@@ -6,7 +6,7 @@ Remote CW (Morse code) keying system for amateur radio transceivers over WiFi.
 
 ## Overview
 
-This project consists of an ESP32-based wireless CW paddle and a server application (PC or ESP32). It enables remote operation of your home station from anywhere, or can be used as a wireless paddle within your shack.
+This project consists of an ESP32-based wireless CW paddle and a server application (PC or ESP32). Both client and server are written entirely in **Rust**, sharing transport and protocol code via a common workspace. Rust's memory safety guarantees and zero-cost abstractions make it well-suited for both the resource-constrained ESP32 firmware and the latency-sensitive PC server. It enables remote operation of your home station from anywhere, or can be used as a wireless paddle within your shack.
 
 ### Problems Solved
 
@@ -793,34 +793,147 @@ When ESP32 and PC are on the same LAN, local IP is prioritized:
 - Minimum latency keying
 - Works even without router hairpin NAT support
 
-## Development Environment
+## Development Environment Setup (Windows)
 
-### Recommended Setup
+Since wifikey-server must be built on Windows (MSVC), and flashing ESP32 also uses Windows tools (espflash), the recommended approach is to do **all development on Windows natively**.
 
-| Component | Development | Build |
-|-----------|-------------|-------|
-| wifikey (ESP32) | WSL2 | WSL2 |
-| wifikey-server (Windows) | WSL2 or Windows | Windows (msvc) |
-| wifikey-server (Linux) | WSL2 | WSL2 |
+### Step 1: Install Visual Studio Build Tools (MSVC)
 
-### ESP32 Development (WSL2)
+The Rust compiler on Windows requires the MSVC C++ build tools.
 
-```bash
-# Install espup
+1. Download **Visual Studio Build Tools** from https://visualstudio.microsoft.com/visual-cpp-build-tools/
+2. In the installer, select **"Desktop development with C++"** workload
+3. Ensure the following components are checked:
+   - MSVC v143 (or later) C++ build tools
+   - Windows 11 SDK (or Windows 10 SDK)
+4. Install and restart if prompted
+
+### Step 2: Install Rust
+
+```powershell
+# Download and run rustup-init.exe from https://rustup.rs/
+# Select "1) Proceed with standard installation" (default = msvc toolchain)
+
+# Verify installation
+rustc --version
+cargo --version
+```
+
+### Step 3: Install Node.js
+
+Required for building the Tauri desktop app (wifikey-server).
+
+1. Download **Node.js 18+** (LTS recommended) from https://nodejs.org/
+2. Install with default settings
+
+```powershell
+node --version
+npm --version
+```
+
+### Step 4: Install ESP32 Toolchain
+
+```powershell
+# Install espup (ESP32 Rust toolchain manager)
 cargo install espup
+
+# Install the ESP32 toolchain (xtensa target + ESP-IDF)
 espup install
 
-# Set environment variables
-source ~/export-esp.sh
-
-# Build
-cargo build -p wifikey --release
+# This creates ~/export-esp.ps1 which sets up PATH and LIBCLANG_PATH
+# The flash.ps1 script sources this automatically
 ```
 
-Flash from Windows:
+### Step 5: Install espflash
+
 ```powershell
-espflash flash \\wsl$\Ubuntu\home\user\src\wifikey2\target\xtensa-esp32-espidf\release\wifikey
+cargo install espflash
 ```
+
+### Step 6: Install cargo-make (optional)
+
+```powershell
+cargo install cargo-make
+```
+
+### Building wifikey-server (Desktop App)
+
+```powershell
+cd wifikey-server
+
+# Install npm dependencies
+npm install
+
+# Development mode (hot-reload)
+npm run tauri:dev
+
+# Release build
+npm run tauri:build
+```
+
+Build output: `src-tauri/target/release/wifikey-server.exe`
+
+You can also check compilation without building the full Tauri app:
+
+```powershell
+cargo check -p wifikey-server
+```
+
+### Building & Flashing ESP32 (flash.ps1)
+
+The `flash.ps1` script handles the full build-flash-monitor cycle for the ESP32 client firmware.
+
+#### Prerequisites
+
+1. Copy `cfg-sample.toml` to `cfg.toml` in the project root and edit it:
+
+   ```toml
+   [wifikey]
+   wifi_ssid = "YourWiFiSSID"
+   wifi_passwd = "YourWiFiPassword"
+   server_name = "JA1XXX/keyer1"
+   server_password = "YourServerPassword"
+   ```
+
+2. Connect the ESP32 board via USB
+
+#### Usage
+
+```powershell
+# Basic usage (M5Atom Lite, auto-detect COM port, debug build)
+.\flash.ps1
+
+# Specify board and COM port
+.\flash.ps1 -Board m5atom -Port COM3
+.\flash.ps1 -Board esp32_wrover -Port COM5
+
+# Release build
+.\flash.ps1 -Release
+
+# Monitor only (no build/flash, useful for viewing serial output)
+.\flash.ps1 -MonitorOnly
+.\flash.ps1 -MonitorOnly -Port COM3
+```
+
+#### Parameters
+
+| Parameter | Values | Default | Description |
+|-----------|--------|---------|-------------|
+| `-Board` | `m5atom`, `esp32_wrover` | `m5atom` | Target board |
+| `-Port` | COM port (e.g. `COM3`) | auto-detect | Serial port |
+| `-Release` | switch | off | Release (optimized) build |
+| `-MonitorOnly` | switch | off | Skip build/flash, open serial monitor only |
+
+#### What flash.ps1 does
+
+1. Sources `~/export-esp.ps1` (ESP toolchain environment)
+2. Builds the firmware from `wifikey/` directory (with board-specific features)
+3. Parses `cfg.toml` and generates an NVS (Non-Volatile Storage) partition with WiFi/server credentials
+4. Flashes the firmware binary via espflash
+5. Writes the NVS partition to offset 0x9000
+6. Opens the serial monitor
+
+> **Note**: `CARGO_TARGET_DIR` is set to `C:\espbuild` to avoid Windows path length limitations with ESP-IDF.
 
 ### Git Hooks Setup
 
