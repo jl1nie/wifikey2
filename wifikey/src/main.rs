@@ -52,6 +52,9 @@ const KEEP_ALIVE: u32 = 3_000; // Send Keep Alive Packet every 3sec
 // Button long press duration for AP mode (in ms)
 const LONG_PRESS_MS: u32 = 5000;
 
+// AP mode password (change before building if desired, must be 8+ chars)
+const AP_PASSWORD: &str = "wifikey2";
+
 // GPIO interrupt state
 static TRIGGER: AtomicBool = AtomicBool::new(false);
 static TICKCOUNT: AtomicU32 = AtomicU32::new(0);
@@ -141,12 +144,13 @@ fn main() -> Result<()> {
 
         // Start AP mode
         let ap_ssid = wifi_manager.generate_ap_ssid();
-        wifi_manager.start_ap_mode(&ap_ssid, None)?;
+        let ap_ip = wifi_manager.start_ap_mode(&ap_ssid, Some(AP_PASSWORD))?;
+        let wifi_manager = Arc::new(Mutex::new(wifi_manager));
 
         // Start web server
-        let _webserver = ConfigWebServer::start(config_manager.clone())?;
+        let _webserver = ConfigWebServer::start(config_manager.clone(), wifi_manager)?;
 
-        info!("AP mode active. Connect to '{ap_ssid}' and open http://192.168.4.1");
+        info!("AP mode active. Connect to '{ap_ssid}' and open http://{ap_ip}");
 
         // Start serial command handler in a thread
         let cm = config_manager.clone();
@@ -159,8 +163,19 @@ fn main() -> Result<()> {
             .ok();
 
         // Stay in AP mode indefinitely (until restart via web UI or serial)
+        // Blink LED to indicate AP mode
         loop {
-            FreeRtos::delay_ms(1000);
+            #[cfg(feature = "board_m5atom")]
+            serial_led.write(blue_color.clone()).unwrap();
+            #[cfg(not(feature = "board_m5atom"))]
+            led.set_high().unwrap();
+            FreeRtos::delay_ms(500);
+
+            #[cfg(feature = "board_m5atom")]
+            serial_led.write(empty_color.clone()).unwrap();
+            #[cfg(not(feature = "board_m5atom"))]
+            led.set_low().unwrap();
+            FreeRtos::delay_ms(500);
         }
     }
 
@@ -277,11 +292,7 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
 ) -> Result<()> {
     let mut pkt_count: usize = 0;
     let mut slot_count: usize = 0;
-    let mut last_sent: u32 = tick_count();
-    let mut dozing = false;
-    let mut sleep_count = 0;
     let mut edge_count: usize = 0;
-    let mut last_stat: u32 = last_sent;
 
     loop {
         // Check WiFi connectivity before attempting server discovery
@@ -374,10 +385,10 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
 
         // Reset timestamps after discovery/connect/auth to avoid stale values
         // in the first SendPacket (which would cause bogus RTT on the server)
-        last_sent = tick_count();
-        last_stat = last_sent;
-        dozing = false;
-        sleep_count = 0;
+        let mut last_sent: u32 = tick_count();
+        let mut last_stat: u32 = last_sent;
+        let mut dozing = false;
+        let mut sleep_count = 0;
 
         loop {
             sleep(1);

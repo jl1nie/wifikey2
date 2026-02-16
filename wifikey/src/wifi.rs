@@ -35,9 +35,11 @@ impl<'a> WifiManager<'a> {
     /// Scan for available WiFi networks
     #[allow(dead_code)]
     pub fn scan(&mut self) -> Result<Vec<String>> {
-        self.wifi
-            .set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
-        self.wifi.start()?;
+        if !self.wifi.is_started()? {
+            self.wifi
+                .set_configuration(&Configuration::Client(ClientConfiguration::default()))?;
+            self.wifi.start()?;
+        }
 
         info!("Scanning for WiFi networks...");
         let ap_infos = self.wifi.scan()?;
@@ -121,7 +123,7 @@ impl<'a> WifiManager<'a> {
     /// Start Access Point mode for configuration
     ///
     /// Creates a WiFi network that users can connect to for configuration.
-    pub fn start_ap_mode(&mut self, ssid: &str, password: Option<&str>) -> Result<()> {
+    pub fn start_ap_mode(&mut self, ssid: &str, password: Option<&str>) -> Result<std::net::Ipv4Addr> {
         info!("Starting AP mode with SSID: {ssid}");
 
         let auth_method = match password {
@@ -144,12 +146,15 @@ impl<'a> WifiManager<'a> {
             ..Default::default()
         };
 
-        self.wifi
-            .set_configuration(&Configuration::AccessPoint(ap_config))?;
+        self.wifi.set_configuration(&Configuration::Mixed(
+            ClientConfiguration::default(),
+            ap_config,
+        ))?;
         self.wifi.start()?;
 
-        info!("AP mode started. Connect to '{ssid}' and open http://192.168.4.1");
-        Ok(())
+        let ap_ip = self.wifi.wifi().ap_netif().get_ip_info()?.ip;
+        info!("AP mode started. Connect to '{ssid}' and open http://{ap_ip}");
+        Ok(ap_ip)
     }
 
     /// Get the MAC address for generating unique AP SSID

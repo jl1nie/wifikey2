@@ -5,8 +5,10 @@
 use anyhow::Result;
 use esp_idf_svc::http::server::{Configuration, EspHttpServer};
 use esp_idf_svc::io::Write;
-use log::info;
+use log::{info, warn};
 use std::sync::{Arc, Mutex};
+
+use crate::wifi::WifiManager;
 
 use crate::config::{ConfigManager, GpioConfig, WifiProfile};
 
@@ -312,9 +314,13 @@ pub struct ConfigWebServer {
 
 impl ConfigWebServer {
     /// Start the configuration web server
-    pub fn start(config_manager: Arc<Mutex<ConfigManager>>) -> Result<Self> {
+    pub fn start(
+        config_manager: Arc<Mutex<ConfigManager>>,
+        wifi_manager: Arc<Mutex<WifiManager<'static>>>,
+    ) -> Result<Self> {
         let server_config = Configuration {
             stack_size: 8192,
+            max_uri_handlers: 16,
             ..Default::default()
         };
 
@@ -442,15 +448,30 @@ impl ConfigWebServer {
             },
         )?;
 
-        // Note: WiFi scan endpoint would need the WifiManager,
-        // which creates a chicken-and-egg problem.
-        // For now, manual SSID entry is required.
+        let wm = wifi_manager.clone();
         server.fn_handler::<anyhow::Error, _>(
             "/api/scan",
             esp_idf_svc::http::Method::Get,
-            |req| {
-                // Return empty array - scanning while in AP mode is complex
-                req.into_ok_response()?.write_all(b"[]")?;
+            move |req| {
+                info!("WiFi scan requested");
+                match wm.lock().unwrap().scan() {
+                    Ok(ssids) => {
+                        info!("Scan found {} networks", ssids.len());
+                        let json = format!(
+                            "[{}]",
+                            ssids
+                                .iter()
+                                .map(|s| format!("\"{}\"", s))
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        );
+                        req.into_ok_response()?.write_all(json.as_bytes())?;
+                    }
+                    Err(e) => {
+                        warn!("WiFi scan failed: {e}");
+                        req.into_ok_response()?.write_all(b"[]")?;
+                    }
+                }
                 Ok(())
             },
         )?;
@@ -518,7 +539,7 @@ impl ConfigWebServer {
             },
         )?;
 
-        info!("Configuration web server started on http://192.168.4.1");
+        info!("Configuration web server started");
         Ok(Self { _server: server })
     }
 }
