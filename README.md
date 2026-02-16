@@ -15,42 +15,267 @@ This project consists of an ESP32-based wireless CW paddle and a server applicat
 3. **Reliability**: Reliable transmission of keying data despite packet loss
 4. **Easy Setup**: No port forwarding or DDNS configuration required
 
-## Architecture
+## System Architecture
+
+### Overall System Diagram
+
+```
+                         ┌──────────────────────────────┐
+                         │        Internet              │
+                         │                              │
+                         │  ┌────────────────────────┐  │
+                         │  │     MQTT Broker        │  │
+                         │  │  (Signaling / Address  │  │
+                         │  │   Exchange)            │  │
+                         │  └───────┬────────────────┘  │
+                         │          │                    │
+                         │  ┌───────┴────────────────┐  │
+                         │  │     STUN Server        │  │
+                         │  │  (Global IP Discovery) │  │
+                         │  └────────────────────────┘  │
+                         └──────────────────────────────┘
+                              ▲                    ▲
+                              │                    │
+┌─────────────────────────────┼────────────────────┼──────────────────────────┐
+│                             │                    │                          │
+│  ┌──────────────────┐       │                    │     ┌──────────────────┐ │
+│  │  wifikey          │       │    KCP (UDP)        │     │  wifikey-server  │ │
+│  │  (ESP32 Client)   │◄──────┼────────────────────┼────►│  (PC / Tauri)    │ │
+│  │                   │       │  Encrypted P2P      │     │                  │ │
+│  │  - Paddle input   │       │  ChaCha20-Poly1305  │     │  - Rig control   │ │
+│  │  - mDNS discovery │       │                    │     │  - Lua CAT       │ │
+│  │  - LED status     │       │   or LAN direct     │     │  - mDNS publish  │ │
+│  │  - Web config UI  │       │                    │     │  - GUI dashboard │ │
+│  └──────────────────┘       │                    │     └────────┬─────────┘ │
+│                             │                    │              │           │
+│                    WiFi / Internet               │         Serial (CAT)    │
+│                                                  │              │           │
+│                                                  │     ┌────────▼─────────┐ │
+│                                                  │     │  Transceiver     │ │
+│                                                  │     │  (Yaesu, ICOM…)  │ │
+│                                                  │     └──────────────────┘ │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
 
 ### PC-based Configuration (wifikey-server)
 
 ```
-┌─────────────────┐     MQTT/STUN      ┌─────────────────┐
-│  wifikey        │◄──────────────────►│  wifikey-server │
-│  (ESP32)        │     KCP (UDP)      │  (PC)           │
-│                 │                    │                 │
-│  - Paddle input │                    │  - Rig control  │
-│  - LED display  │                    │  - Keying       │
-└─────────────────┘                    │  - GUI (Tauri)  │
-                                       └────────┬────────┘
-                                                │ Serial
-                                       ┌────────▼────────┐
-                                       │  Transceiver    │
-                                       └─────────────────┘
+┌─────────────────┐     MQTT/STUN/mDNS   ┌─────────────────┐
+│  wifikey        │◄────────────────────►│  wifikey-server │
+│  (ESP32)        │     KCP (UDP)        │  (PC)           │
+│                 │                      │                 │
+│  - Paddle input │                      │  - Rig control  │
+│  - LED display  │                      │  - Lua CAT      │
+└─────────────────┘                      │  - GUI (Tauri)  │
+                                         └────────┬────────┘
+                                                  │ Serial
+                                         ┌────────▼────────┐
+                                         │  Transceiver    │
+                                         └─────────────────┘
 ```
 
 ### PC-less Configuration (wifikey-esp32-server)
 
 ```
-┌─────────────────┐     MQTT/STUN      ┌─────────────────┐
-│  wifikey        │◄──────────────────►│wifikey-esp32-   │
-│  (ESP32 Client) │     KCP (UDP)      │server (ESP32)   │
-│                 │                    │                 │
-│  - Paddle input │                    │  - GPIO output  │
-│  - LED display  │                    │  - Keying       │
-└─────────────────┘                    └────────┬────────┘
-                                                │ Photocoupler
-                                       ┌────────▼────────┐
-                                       │  Transceiver    │
-                                       └─────────────────┘
+┌─────────────────┐     MQTT/STUN        ┌─────────────────┐
+│  wifikey        │◄────────────────────►│wifikey-esp32-   │
+│  (ESP32 Client) │     KCP (UDP)        │server (ESP32)   │
+│                 │                      │                 │
+│  - Paddle input │                      │  - GPIO output  │
+│  - LED display  │                      │  - Keying       │
+└─────────────────┘                      └────────┬────────┘
+                                                  │ Photocoupler
+                                         ┌────────▼────────┐
+                                         │  Transceiver    │
+                                         └─────────────────┘
 ```
 
 With wifikey-esp32-server, remote keying is possible without a PC. The ESP32 server drives a photocoupler via GPIO output to key the transceiver.
+
+### Connection Establishment Flow
+
+```
+  ESP32 (Client)              MQTT Broker              PC (Server)
+       │                          │                          │
+       ├──SUBSCRIBE───────────────►                          │
+       │                          ◄───────────SUBSCRIBE──────┤
+       │                          │                          │
+       │  ┌─────────────┐        │        ┌─────────────┐  │
+       │  │ STUN query   │        │        │ STUN query   │  │
+       │  │ → global IP  │        │        │ → global IP  │  │
+       │  └─────────────┘        │        └─────────────┘  │
+       │                          │                          │
+       ├──PUBLISH {local,stun}───►├──────────────────────────►│
+       │                          │                          │
+       │◄─────────────────────────┤◄──PUBLISH {local,stun}───┤
+       │                          │                          │
+       ╔══════════════════════════╧══════════════════════════╗
+       ║  UDP Hole Punching → KCP Encrypted Session          ║
+       ║  (LAN-local address prioritized if available)       ║
+       ╚═════════════════════════════════════════════════════╝
+```
+
+## Directory Structure
+
+```
+wifikey2/
+├── Cargo.toml                    # Workspace root
+├── Makefile.toml                 # cargo-make task definitions
+├── cfg.toml                      # Server config (runtime)
+├── cfg-sample.toml               # Server config example
+├── sdkconfig.defaults            # ESP-IDF defaults
+├── README.md / README-ja.md
+├── LICENSE
+│
+├── wifikey/                      # ESP32 client firmware
+│   ├── Cargo.toml                #   crate config (toml-cfg build-time settings)
+│   ├── cfg.toml                  #   client build-time config
+│   ├── rust-toolchain.toml       #   esp toolchain
+│   ├── .cargo/config.toml        #   ESP-IDF build env vars
+│   └── src/
+│       └── main.rs               #   entry point (WiFi, mDNS, paddle, LED)
+│
+├── wifikey-esp32-server/         # ESP32 server firmware (PC-less keying)
+│   ├── Cargo.toml
+│   ├── rust-toolchain.toml
+│   └── src/
+│       └── main.rs               #   entry point (GPIO keying output)
+│
+├── wifikey-server/               # Desktop GUI application (Tauri 2.x)
+│   ├── package.json              #   npm / Tauri CLI
+│   ├── src-tauri/                #   Rust backend
+│   │   ├── Cargo.toml
+│   │   ├── tauri.conf.json
+│   │   └── src/
+│   │       ├── main.rs           #     Tauri entry point + commands
+│   │       ├── lib.rs            #     library root
+│   │       ├── commands.rs       #     AppState, Tauri command handlers
+│   │       ├── config.rs         #     AppConfig (serde)
+│   │       ├── server.rs         #     WifiKeyServer (main loop, mDNS)
+│   │       ├── keyer.rs          #     RemoteKeyer (serial DTR/RTS)
+│   │       └── rigcontrol.rs     #     RigControl + Lua scripting engine
+│   ├── src-frontend/             #   Web frontend
+│   │   ├── index.html
+│   │   ├── main.js               #     main UI
+│   │   ├── settings.js           #     settings modal
+│   │   └── styles.css
+│   └── scripts/                  #   Lua CAT scripts
+│       ├── yaesu_ft891.lua       #     Yaesu FT-891 implementation
+│       └── icom_template.lua     #     ICOM CI-V template
+│
+├── wksocket/                     # KCP-based transport library
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs                #   re-exports, mDNS constants
+│       ├── wksession.rs          #   WkSession, WkListener
+│       ├── wkmessage.rs          #   WkSender, WkReceiver, message types
+│       └── wkutil.rs             #   sleep, tick_count utilities
+│
+└── mqttstunclient/               # MQTT + STUN signaling client
+    ├── Cargo.toml
+    └── src/
+        └── lib.rs                #   MQTTStunClient
+```
+
+## Lua CAT Scripting
+
+Since **v0.3.0**, wifikey-server supports **Lua scripting** for generic rig control (CAT - Computer Aided Transceiver). This allows any CAT-compatible transceiver to be controlled without modifying the server source code.
+
+### How It Works
+
+The server embeds a sandboxed **Lua 5.4** VM (via [mlua](https://crates.io/crates/mlua)). Each Lua script defines serial port settings, CAT protocol commands, and optional custom actions for a specific transceiver model.
+
+```
+┌───────────────────────────────────┐
+│  wifikey-server                   │
+│                                   │
+│  ┌─────────────┐  ┌────────────┐ │
+│  │ Lua 5.4 VM  │  │ Serial I/O │ │
+│  │ (sandboxed) │─►│ background │─────► Transceiver (CAT port)
+│  │             │  │ buffer     │ │
+│  │ yaesu.lua   │  └────────────┘ │
+│  │ icom.lua    │                  │
+│  │ custom.lua  │  ┌────────────┐ │
+│  │    ...      │─►│ Keying     │─────► Transceiver (KEY port)
+│  └─────────────┘  │ DTR / RTS  │ │
+│                    └────────────┘ │
+└───────────────────────────────────┘
+```
+
+### Script Locations
+
+Scripts are searched in priority order:
+
+1. Absolute path (if specified in config)
+2. `%APPDATA%\com.wifikey2.server\scripts\` (Windows user directory)
+3. `<executable_dir>\scripts\` (bundled with the app)
+
+### Script Structure
+
+Each Lua script returns a table implementing the rig protocol:
+
+```lua
+local rig = {}
+
+-- Serial port configuration
+rig.serial_config = {
+    baud = 4800,
+    stop_bits = 2,
+    parity = "none",        -- "none" | "odd" | "even"
+    timeout_ms = 100
+}
+
+-- CAT protocol methods
+function rig:get_freq(vfoa)     ... end   -- Get VFO frequency (Hz)
+function rig:set_freq(vfoa, f)  ... end   -- Set VFO frequency (Hz)
+function rig:get_mode()         ... end   -- Get mode ("LSB","USB","CW-U",…)
+function rig:set_mode(mode)     ... end   -- Set mode
+function rig:get_power()        ... end   -- Get TX power (0-100)
+function rig:set_power(p)       ... end   -- Set TX power (0-100)
+function rig:read_swr()         ... end   -- Read SWR meter
+function rig:encoder_up(main, step)   ... end
+function rig:encoder_down(main, step) ... end
+
+-- Optional: custom UI actions
+rig.actions = {
+    start_atu = {
+        label = "Start ATU",
+        fn = function(self, ctl)
+            ctl:assert_key(true)          -- Key down
+            sleep_ms(3000)
+            ctl:assert_key(false)         -- Key up
+        end
+    },
+    freq_up   = { label = "+", fn = function(self, ctl) ... end },
+    freq_down = { label = "-", fn = function(self, ctl) ... end },
+}
+
+return rig
+```
+
+### Lua API Reference
+
+| API | Description |
+|-----|-------------|
+| `self.port:write(data)` | Write bytes to CAT serial port |
+| `self.port:read(max, timeout_ms)` | Read from background buffer |
+| `self.port:read_until(delim, timeout_ms)` | Read until delimiter byte |
+| `self.port:clear_input()` | Flush serial input buffer |
+| `rig_control:assert_key(bool)` | Assert/deassert CW key (DTR/RTS) |
+| `rig_control:assert_atu(bool)` | Assert/deassert ATU trigger pin |
+| `log_info(msg)` | Log to server console |
+| `sleep_ms(ms)` | Sleep for milliseconds |
+
+**Sandboxing**: Only `table`, `string`, `math`, `coroutine` standard libraries are available. No `io`, `os`, or `debug` access.
+
+### Included Scripts
+
+| Script | Transceiver | Protocol | Baud |
+|--------|-------------|----------|------|
+| `yaesu_ft891.lua` | Yaesu FT-891 | Yaesu CAT (ASCII, `;` terminated) | 4800 |
+| `icom_template.lua` | ICOM (template) | CI-V (`FE FE` framed, BCD freq) | 9600 |
+
+To add support for a new transceiver, copy an existing script and implement the protocol-specific commands.
 
 ## Keying Packet Encoding
 
@@ -159,15 +384,75 @@ MQTT Benefits:
 - **QoS Support**: Guaranteed message delivery
 - **Last Will**: Disconnection detection
 
+### mDNS Discovery
+
+When both devices are on the same LAN, **mDNS** (`_wifikey2._udp.local.`) is used in parallel with MQTT/STUN for zero-configuration discovery with minimal latency.
+
+- Server advertises via `mdns-sd` crate
+- Client queries via `esp-idf-svc::mdns`
+- LAN connection is always preferred over WAN
+
 ## Crate Structure
 
-| Crate | Description |
-|-------|-------------|
-| `wifikey` | ESP32 client firmware (paddle input) |
-| `wifikey-esp32-server` | ESP32 server firmware (PC-less rig control) |
-| `wifikey-server` | Desktop GUI application (**Tauri 2.x**) |
-| `wksocket` | KCP-based communication library |
-| `mqttstunclient` | MQTT + STUN client |
+| Crate | Version | Description |
+|-------|---------|-------------|
+| `wifikey` | 0.2.0 | ESP32 client firmware (paddle input) |
+| `wifikey-esp32-server` | 0.1.0 | ESP32 server firmware (PC-less rig control) |
+| `wifikey-server` | 0.3.1 | Desktop GUI application (**Tauri 2.x**) |
+| `wksocket` | 0.1.0 | KCP-based communication library |
+| `mqttstunclient` | 0.1.0 | MQTT + STUN client |
+
+## Requirements
+
+### wifikey-server (PC)
+
+| Component | Version |
+|-----------|---------|
+| Rust | 1.71+ (stable) |
+| Node.js | 18+ |
+| Tauri CLI | 2.x |
+| OS | Windows 10+, Linux, macOS |
+
+#### Key Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| tauri | 2.0 | Desktop application framework |
+| mlua | 0.10 (Lua 5.4) | Lua scripting for CAT |
+| serialport | 4.3 | Serial port I/O |
+| kcp | 0.5 | Reliable UDP transport |
+| rumqttc | 0.24 | MQTT client |
+| mdns-sd | 0.11 | mDNS service discovery |
+| chacha20poly1305 | 0.10 | Authenticated encryption |
+
+#### Platform-specific Requirements
+
+| OS | Additional Requirements |
+|----|------------------------|
+| Windows | WebView2 (auto-installed) |
+| Linux | `libwebkit2gtk-4.1`, `libgtk-3` |
+| macOS | Xcode Command Line Tools |
+
+### wifikey / wifikey-esp32-server (ESP32)
+
+| Component | Version |
+|-----------|---------|
+| Rust toolchain | `esp` channel (via espup) |
+| ESP-IDF | v5.2.2 |
+| Target | xtensa-esp32-espidf |
+| espflash | latest |
+
+#### Key Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| esp-idf-sys | 0.36 | ESP-IDF bindings |
+| esp-idf-svc | 0.51 | ESP-IDF services (WiFi, mDNS, HTTP) |
+| esp-idf-hal | 0.45 | Hardware abstraction |
+| ws2812-esp32-rmt-driver | 0.12 | WS2812 serial LED driver |
+| kcp | 0.5 | Reliable UDP transport |
+
+**Note**: ESP-IDF requires the `espressif/mdns` component (v1.2) configured in `wifikey/Cargo.toml` via `[package.metadata.esp-idf-sys]`.
 
 ## Hardware
 
@@ -215,27 +500,6 @@ Basic configuration:
 - Photocoupler (PC817, etc.) for key input isolation
 - 100Ω current limiting resistor
 - GPIO input uses internal pull-up
-
-## Requirements
-
-### wifikey (ESP32)
-- Rust 1.71+
-- ESP-IDF v5.2.2
-- espflash
-- **Recommended: Build on WSL2** (avoids Windows path length limits)
-
-### wifikey-server (PC)
-- Rust 1.71+
-- Node.js 18+ (for Tauri)
-- Serial port support (Windows / Linux / macOS)
-
-#### Platform-specific Requirements
-
-| OS | Additional Requirements |
-|----|------------------------|
-| Windows | WebView2 (auto-installed) |
-| Linux | `libwebkit2gtk-4.1`, `libgtk-3` |
-| macOS | Xcode Command Line Tools |
 
 ## Build
 
@@ -325,6 +589,7 @@ server_password = "your-password"
 rigcontrol_port = "COM3"      # Windows (Linux: /dev/ttyUSB0)
 keying_port = "COM4"
 use_rts_for_keying = true
+lua_script = "yaesu_ft891.lua"  # Lua CAT script name
 ```
 
 **GUI Settings**: Also configurable via in-app settings
@@ -466,8 +731,8 @@ cargo make esp-server-flash
 
 | Button | Function |
 |--------|----------|
-| ⚙️ | Server settings (name, password, ports) |
-| 📡 | ESP32 config (via USB serial) |
+| Settings | Server settings (name, password, ports) |
+| ESP32 Config | ESP32 config (via USB serial) |
 | Start ATU | Send ATU start command |
 
 ### Performance Dashboard
@@ -484,10 +749,11 @@ The server app displays real-time statistics:
 
 - **Remote Keying**: Real-time paddle operation transmission
 - **NAT Traversal**: Connection via MQTT + STUN
+- **mDNS Discovery**: Zero-configuration LAN discovery (`_wifikey2._udp`)
 - **Same LAN Support**: Local IP priority for low latency
-- **Encryption**: ChaCha20-Poly1305 encrypted communication
+- **Encryption**: ChaCha20-Poly1305 authenticated encryption
 - **ATU Control**: Antenna tuner activation
-- **Rig Control**: Frequency/mode control via CAT
+- **Lua CAT Scripting**: Extensible rig control via Lua scripts
 - **GUI Settings**: Serial port selection and settings (Tauri version)
 - **Easy ESP32 Setup**: AP mode/Web UI or USB serial configuration
 - **PC-less Operation**: Standalone operation with ESP32 server
@@ -501,20 +767,10 @@ This system uses an ICE-like connection establishment method.
 
 | Environment | Support |
 |-------------|---------|
-| Same LAN | ✓ Direct connection via local IP |
+| Same LAN | ✓ Direct connection via local IP (mDNS) |
 | Home router (Cone NAT) | ✓ STUN hole punching |
 | Mobile carrier (most) | ✓ STUN hole punching |
 | Symmetric NAT | ✗ Not supported (requires TURN) |
-
-### Connection Flow
-
-```
-1. ESP32/PC connect to MQTT broker
-2. Obtain global IP:port via STUN
-3. Exchange both local IP and STUN addresses via MQTT
-4. Send UDP punching packets to both addresses
-5. Start KCP communication on first responding address
-```
 
 ### Same LAN Operation
 
