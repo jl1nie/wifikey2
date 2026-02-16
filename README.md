@@ -43,7 +43,7 @@ This project consists of an ESP32-based wireless CW paddle and a server applicat
 │  │  (ESP32 Client)   │◄──────┼────────────────────┼────►│  (PC / Tauri)    │ │
 │  │                   │       │                    │     │                  │ │
 │  │  - Paddle input   │       │                    │     │  - Rig control   │ │
-│  │  - mDNS discovery │       │                    │     │  - Lua CAT       │ │
+│  │  - mDNS discovery │       │                    │     │  - Lua rig ctrl  │ │
 │  │  - LED status     │       │   or LAN direct     │     │  - mDNS publish  │ │
 │  │  - Web config UI  │       │                    │     │  - GUI dashboard │ │
 │  └──────────────────┘       │                    │     └────────┬─────────┘ │
@@ -65,7 +65,7 @@ This project consists of an ESP32-based wireless CW paddle and a server applicat
 │  (ESP32)        │     KCP (UDP)        │  (PC)           │
 │                 │                      │                 │
 │  - Paddle input │                      │  - Rig control  │
-│  - LED display  │                      │  - Lua CAT      │
+│  - LED display  │                      │  - Lua rig ctrl │
 └─────────────────┘                      │  - GUI (Tauri)  │
                                          └────────┬────────┘
                                                   │ Serial
@@ -177,13 +177,13 @@ wifikey2/
         └── lib.rs                #   MQTTStunClient
 ```
 
-## Lua CAT Scripting
+## Lua Rig Control Scripting
 
-Since **v0.3.0**, wifikey-server supports **Lua scripting** for generic rig control (CAT - Computer Aided Transceiver). This allows any CAT-compatible transceiver to be controlled without modifying the server source code.
+Since **v0.3.0**, wifikey-server supports **Lua scripting** for generic rig control. Each transceiver manufacturer uses a different serial protocol (Yaesu CAT, ICOM CI-V, Kenwood, etc.), so the Lua layer provides a unified interface that abstracts the protocol differences. This allows any serial-controlled transceiver to be supported by simply writing a Lua script, without modifying the server source code.
 
 ### How It Works
 
-The server embeds a sandboxed **Lua 5.4** VM (via [mlua](https://crates.io/crates/mlua)). Each Lua script defines serial port settings, CAT protocol commands, and optional custom actions for a specific transceiver model.
+The server embeds a sandboxed **Lua 5.4** VM (via [mlua](https://crates.io/crates/mlua)). Each Lua script defines serial port settings, protocol-specific commands, and optional custom actions for a specific transceiver model.
 
 ```
 ┌───────────────────────────────────┐
@@ -386,11 +386,25 @@ MQTT Benefits:
 
 ### mDNS Discovery
 
-When both devices are on the same LAN, **mDNS** (`_wifikey2._udp.local.`) is used in parallel with MQTT/STUN for zero-configuration discovery with minimal latency.
+When both devices are on the same LAN, **mDNS** (Multicast DNS) enables zero-configuration discovery without relying on internet services.
 
-- Server advertises via `mdns-sd` crate
-- Client queries via `esp-idf-svc::mdns`
-- LAN connection is always preferred over WAN
+**How it works:**
+
+1. The server registers a service `_wifikey2._udp.local.` via mDNS, advertising its local IP and listening port
+2. The client queries for `_wifikey2._udp` services on the local network with a 5-second timeout
+3. If a matching server name is found, the client connects directly via the local IP address
+
+mDNS discovery runs **in parallel** with MQTT/STUN — whichever method finds the server first is used. Since mDNS operates entirely on the local network, it typically resolves faster than the internet-based MQTT/STUN path.
+
+| Side | Implementation | Details |
+|------|---------------|---------|
+| Server | `mdns-sd` crate | `ServiceDaemon` advertises on LAN listener port |
+| Client | `esp-idf-svc::EspMdns` | Queries `_wifikey2._udp` with 5s timeout |
+
+**Benefits over MQTT/STUN alone:**
+- No internet connection required for same-LAN operation
+- Lower latency (no round-trip to external servers)
+- Automatic — no manual IP configuration needed
 
 ## Crate Structure
 
@@ -753,7 +767,7 @@ The server app displays real-time statistics:
 - **Same LAN Support**: Local IP priority for low latency
 - **Signaling Encryption**: ChaCha20-Poly1305 encrypted MQTT signaling
 - **ATU Control**: Antenna tuner activation
-- **Lua CAT Scripting**: Extensible rig control via Lua scripts
+- **Lua Rig Control**: Extensible rig control via Lua scripts (Yaesu CAT, ICOM CI-V, etc.)
 - **GUI Settings**: Serial port selection and settings (Tauri version)
 - **Easy ESP32 Setup**: AP mode/Web UI or USB serial configuration
 - **PC-less Operation**: Standalone operation with ESP32 server
