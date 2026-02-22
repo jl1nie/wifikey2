@@ -7,6 +7,10 @@ fn default_rig_script() -> String {
     "yaesu_ft891.lua".to_string()
 }
 
+fn default_pwa_port() -> u16 {
+    8765
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub server_name: String,
@@ -16,6 +20,8 @@ pub struct AppConfig {
     pub use_rts_for_keying: bool,
     #[serde(default = "default_rig_script")]
     pub rig_script: String,
+    #[serde(default = "default_pwa_port")]
+    pub pwa_port: u16,
 }
 
 impl Default for AppConfig {
@@ -27,6 +33,7 @@ impl Default for AppConfig {
             keying_port: "COM6".to_string(),
             use_rts_for_keying: true,
             rig_script: default_rig_script(),
+            pwa_port: default_pwa_port(),
         }
     }
 }

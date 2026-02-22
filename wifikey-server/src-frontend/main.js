@@ -6,6 +6,7 @@ const { invoke } = window.__TAURI__.core;
 const appTitle = document.getElementById('app-title');
 const sessionStart = document.getElementById('session-start');
 const peerAddress = document.getElementById('peer-address');
+const pwaUrlEl = document.getElementById('pwa-url');
 const wpmValue = document.getElementById('wpm-value');
 const pktValue = document.getElementById('pkt-value');
 const rttValue = document.getElementById('rtt-value');
@@ -30,7 +31,17 @@ async function initializeApp() {
     await loadRigActions();
     startStatsUpdate();
     setupLogListener();
+    loadPwaUrl();
     console.log('WiFiKey2 initialized');
+}
+
+async function loadPwaUrl() {
+    try {
+        const url = await invoke('get_pwa_url');
+        if (pwaUrlEl) pwaUrlEl.textContent = url;
+    } catch (e) {
+        console.error('Failed to get PWA URL:', e);
+    }
 }
 
 function setupEventListeners() {

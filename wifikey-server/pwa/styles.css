@@ -1,0 +1,220 @@
+/* WiFiKey2 PWA Styles */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --primary: #00b4d8;
+    --primary-dim: #0077b6;
+    --text: #e0e0e0;
+    --text-dim: #888;
+    --danger: #e63946;
+    --success: #2dc653;
+    --key-color: #ff6b35;
+    --key-active: #c0392b;
+    --border: #2a2a4a;
+}
+
+html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-size: 15px;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    overflow-x: hidden;
+}
+
+/* ── Connection bar ── */
+.connect-bar {
+    display: flex;
+    gap: 6px;
+    padding: 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+}
+
+.url-input {
+    flex: 1 1 180px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+.pass-input {
+    flex: 0 1 110px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 6px 10px;
+    font-size: 13px;
+}
+
+.btn-connect {
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-size: 14px;
+    cursor: pointer;
+}
+.btn-connect:disabled { opacity: 0.5; cursor: default; }
+
+/* ── Status bar ── */
+.status-bar {
+    padding: 5px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+}
+.status-bar.connected { background: var(--success); color: #000; }
+.status-bar.disconnected { background: #333; color: var(--text-dim); }
+
+/* ── Main content ── */
+.main-content { padding: 12px; }
+.hidden { display: none !important; }
+
+/* ── Rig section ── */
+.rig-section {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border-radius: 8px;
+}
+
+.freq-display {
+    font-size: 26px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--primary);
+    letter-spacing: 2px;
+}
+.freq-unit { font-size: 13px; color: var(--text-dim); }
+.mode-display { font-size: 18px; font-weight: 600; color: var(--text); }
+
+/* ── Frequency steps ── */
+.step-section { margin-bottom: 12px; }
+.step-row { display: flex; gap: 6px; margin-bottom: 5px; }
+
+.step-btn {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 8px 4px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.step-btn:active { background: var(--primary-dim); }
+
+/* ── Mode section ── */
+.mode-section {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    align-items: center;
+}
+
+.mode-select {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 7px 10px;
+    font-size: 14px;
+}
+
+.btn-secondary {
+    background: var(--surface);
+    border: 1px solid var(--primary);
+    border-radius: 6px;
+    color: var(--primary);
+    padding: 7px 14px;
+    font-size: 14px;
+    cursor: pointer;
+}
+.btn-secondary:active { background: var(--primary-dim); color: #fff; }
+
+/* ── KEY Button ── */
+.key-section {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 16px;
+}
+
+.key-btn {
+    width: 180px;
+    height: 180px;
+    border-radius: 50%;
+    background: var(--key-color);
+    border: none;
+    color: #fff;
+    font-size: 28px;
+    font-weight: 800;
+    letter-spacing: 4px;
+    cursor: pointer;
+    box-shadow: 0 6px 24px rgba(255,107,53,0.4);
+    transition: transform 0.05s, background 0.05s;
+    touch-action: none;
+}
+
+.key-btn:active,
+.key-btn.key-pressed {
+    background: var(--key-active);
+    transform: scale(0.95);
+    box-shadow: 0 2px 8px rgba(255,107,53,0.3);
+}
+
+/* ── Stats ── */
+.stats-section {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: var(--text-dim);
+}
+.stat span { color: var(--text); font-weight: 600; }
+
+/* ── Web Serial ── */
+.serial-section {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    padding: 10px;
+    background: var(--surface);
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.serial-select {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    padding: 5px 8px;
+    font-size: 13px;
+}
+
+.serial-status { color: var(--text-dim); }
+
+/* Responsive: wider screens */
+@media (min-width: 480px) {
+    .main-content { max-width: 420px; margin: 0 auto; }
+    .key-btn { width: 200px; height: 200px; }
+}

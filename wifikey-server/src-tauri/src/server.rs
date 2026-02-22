@@ -352,6 +352,11 @@ impl WifiKeyServer {
         })
     }
 
+    /// PWAサーバーがリグ制御を共有するためのゲッター
+    pub fn rigcontrol(&self) -> Arc<RigControl> {
+        self.rigcontrol.clone()
+    }
+
     #[allow(dead_code)]
     pub fn start_atu(&self) {
         self.remote_stats.set_atu_start(true);

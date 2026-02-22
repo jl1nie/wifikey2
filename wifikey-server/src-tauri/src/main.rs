@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 mod commands;
 mod config;
 mod keyer;
+mod pwa_server;
 mod rigcontrol;
 mod server;
 
@@ -258,6 +259,30 @@ async fn esp32_info(port: String) -> Result<String, String> {
     esp32_send_command(port, "AT+INFO".to_string()).await
 }
 
+/// Get PWA server URL (for display in the Tauri frontend)
+#[tauri::command]
+async fn get_pwa_url(state: State<'_, AppState>) -> Result<String, String> {
+    let port = {
+        let config = state.config.lock().await;
+        config.pwa_port
+    };
+    let ip = get_local_ip();
+    Ok(format!("http://{}:{}", ip, port))
+}
+
+/// LAN-side IP アドレスを取得する
+fn get_local_ip() -> String {
+    use std::net::UdpSocket;
+    UdpSocket::bind("0.0.0.0:0")
+        .ok()
+        .and_then(|s| {
+            let _ = s.connect("8.8.8.8:80");
+            s.local_addr().ok()
+        })
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "127.0.0.1".to_string())
+}
+
 /// Restart server with new configuration
 async fn restart_server_internal(
     state: &State<'_, AppState>,
@@ -377,6 +402,7 @@ fn main() {
             esp32_restart,
             esp32_info,
             list_rig_scripts,
+            get_pwa_url,
         ])
         .setup(move |app| {
             log::info!("WiFiKey2 starting...");
@@ -400,6 +426,20 @@ fn main() {
                     log::error!("Check serial port settings in cfg.toml");
                 }
             }
+
+            // Start PWA HTTP + WebSocket server
+            let pwa_state = pwa_server::PwaState {
+                password: Arc::new(init_config.server_password.clone()),
+                server:   state.server.clone(),
+                remote_stats: state.remote_stats.clone(),
+            };
+            let pwa_port = init_config.pwa_port;
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = pwa_server::run_pwa_server(pwa_port, pwa_state).await {
+                    log::error!("PWA server error: {}", e);
+                }
+            });
+            log::info!("PWA server starting on port {}", pwa_port);
 
             Ok(())
         })

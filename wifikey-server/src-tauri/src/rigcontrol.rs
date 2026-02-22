@@ -254,6 +254,14 @@ struct LuaState {
     _reader_handle: ReaderHandle,
 }
 
+/// リグ状態 (PWAサーバー向け)
+pub struct RigInfo {
+    pub freq_a: u64,
+    pub freq_b: u64,
+    pub mode: String,
+    pub power: u64,
+}
+
 pub struct RigControl {
     keying_port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
     lua_state: Option<Mutex<LuaState>>,
@@ -557,6 +565,17 @@ impl RigControl {
             lua_state: None,
             use_rts_for_keying: false,
         }
+    }
+
+    /// リグの現在状態を取得 (PWAサーバー向け)
+    pub fn get_rig_info(&self) -> RigInfo {
+        let freq_a = self.get_freq(true).unwrap_or(0) as u64;
+        let freq_b = self.get_freq(false).unwrap_or(0) as u64;
+        let mode = self.get_mode()
+            .map(|m| m.to_str().to_string())
+            .unwrap_or_default();
+        let power = self.get_power().unwrap_or(0) as u64;
+        RigInfo { freq_a, freq_b, mode, power }
     }
 
     /// Lua関数を呼び出すヘルパー（引数なし、戻り値T）

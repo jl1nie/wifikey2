@@ -47,7 +47,8 @@
       }
     },
     "resources": {
-      "../scripts/*": "scripts/"
+      "../scripts/*": "scripts/",
+      "../pwa/*": "pwa/"
     }
   },
   "plugins": {}
