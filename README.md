@@ -77,7 +77,7 @@ This project consists of an ESP32-based wireless CW paddle and a server applicat
 ### PC-less Configuration (wifikey --features server)
 
 ```
-┌─────────────────┐     MQTT/STUN        ┌─────────────────┐
+┌─────────────────┐   MQTT/STUN/mDNS     ┌─────────────────┐
 │  wifikey        │◄────────────────────►│  wifikey        │
 │  (ESP32 Client) │     KCP (UDP)        │  (ESP32 Server) │
 │                 │                      │  --features     │
