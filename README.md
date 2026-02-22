@@ -95,11 +95,16 @@ With `--features server`, the same `wifikey` crate runs as a standalone server. 
 ### Connection Establishment Flow
 
 ```
-  ESP32 (Client)              MQTT Broker              PC (Server)
+  ESP32 (Client)              MQTT Broker              Server (PC/ESP32)
        │                          │                          │
+       │  [Path A: mDNS — same LAN only, runs in parallel with B]
+       ├─ mDNS query (multicast LAN) ──────────────────────► │ (advertises)
+       │◄─ IP:port ────────────────────────────────────────── ┤
+       │   → if found: direct KCP, Path B not needed          │
+       │                          │                          │
+       │  [Path B: MQTT + STUN — LAN or WAN]                 │
        ├──SUBSCRIBE───────────────►                          │
        │                          ◄───────────SUBSCRIBE──────┤
-       │                          │                          │
        │  ┌─────────────┐        │        ┌─────────────┐  │
        │  │ STUN query   │        │        │ STUN query   │  │
        │  │ → global IP  │        │        │ → global IP  │  │
@@ -110,8 +115,7 @@ With `--features server`, the same `wifikey` crate runs as a standalone server. 
        │◄─────────────────────────┤◄──PUBLISH {local,stun}───┤
        │                          │                          │
        ╔══════════════════════════╧══════════════════════════╗
-       ║  UDP Hole Punching → KCP Session                      ║
-       ║  (LAN-local address prioritized if available)       ║
+       ║  First path wins → KCP Session established            ║
        ╚═════════════════════════════════════════════════════╝
 ```
 
