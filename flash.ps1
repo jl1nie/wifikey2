@@ -1,5 +1,5 @@
 # flash.ps1 - Build and flash wifikey2 ESP32 firmware
-# Usage: .\flash.ps1 [-Board m5atom|esp32_wrover] [-Port COM3] [-Release] [-MonitorOnly]
+# Usage: .\flash.ps1 [-Board m5atom|esp32_wrover] [-Port COM3] [-Release] [-MonitorOnly] [-Server]
 
 param(
     [ValidateSet("m5atom", "esp32_wrover")]
@@ -9,12 +9,15 @@ param(
 
     [switch]$Release,
 
-    [switch]$MonitorOnly
+    [switch]$MonitorOnly,
+
+    [switch]$Server   # Build as ESP32 server (keying receiver) instead of client
 )
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== wifikey2 build & flash ===" -ForegroundColor Cyan
+$mode = if ($Server) { "server" } else { "client" }
+Write-Host "=== wifikey2 build & flash ($mode) ===" -ForegroundColor Cyan
 Write-Host "  Board: $Board"
 
 # Source ESP environment
@@ -52,10 +55,17 @@ if ($MonitorOnly) {
 }
 
 # Select features based on board
-$features = if ($Board -eq "esp32_wrover") {
+$boardFeature = if ($Board -eq "esp32_wrover") {
     "board_esp32_wrover"
 } else {
     "board_m5atom"
+}
+
+# Add server feature if requested
+$features = if ($Server) {
+    "$boardFeature,server"
+} else {
+    $boardFeature
 }
 
 $profile = if ($Release) { "release" } else { "dev" }

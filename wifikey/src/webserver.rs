@@ -12,7 +12,8 @@ use crate::wifi::WifiManager;
 
 use crate::config::{ConfigManager, GpioConfig, WifiProfile};
 
-/// HTML template for the configuration page
+/// HTML template for the configuration page (client mode)
+#[cfg(not(feature = "server"))]
 const INDEX_HTML: &str = r#"<!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -27,7 +28,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
         .card { background: #16213e; border-radius: 8px; padding: 20px; margin-bottom: 15px; }
         .card h2 { font-size: 1.1em; margin-bottom: 15px; color: #00d4ff; }
         label { display: block; margin-bottom: 5px; font-size: 0.9em; color: #aaa; }
-        input, select { width: 100%; padding: 10px; margin-bottom: 12px; border: 1px solid #333; 
+        input, select { width: 100%; padding: 10px; margin-bottom: 12px; border: 1px solid #333;
                        border-radius: 4px; background: #0f0f23; color: #eee; font-size: 1em; }
         input:focus { border-color: #00d4ff; outline: none; }
         button { width: 100%; padding: 12px; border: none; border-radius: 4px; font-size: 1em;
@@ -147,7 +148,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 if (profiles.length === 0) {
                     container.innerHTML = '<p style="color:#666">No profiles configured</p>';
                 } else {
-                    container.innerHTML = profiles.map((p, i) => 
+                    container.innerHTML = profiles.map((p, i) =>
                         `<div class="profile-item">
                             <span>${p.ssid} → ${p.server_name}${p.tethering ? ' [T]' : ''}</span>
                             <button class="btn-danger" onclick="deleteProfile(${i})">Delete</button>
@@ -249,11 +250,11 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             try {
                 const res = await fetch('/api/gpio');
                 const gpio = await res.json();
-                document.getElementById('gpioKey').value = gpio.key_input;
+                document.getElementById('gpioKey').value = gpio.key_gpio;
                 document.getElementById('gpioBtn').value = gpio.button;
                 document.getElementById('gpioLed').value = gpio.led;
-                document.getElementById('gpioInfo').innerHTML = 
-                    `<p style="color:#888;margin-bottom:10px">Current: Key=GPIO${gpio.key_input}, Btn=GPIO${gpio.button}, LED=GPIO${gpio.led}</p>`;
+                document.getElementById('gpioInfo').innerHTML =
+                    `<p style="color:#888;margin-bottom:10px">Current: Key=GPIO${gpio.key_gpio}, Btn=GPIO${gpio.button}, LED=GPIO${gpio.led}</p>`;
             } catch (e) {
                 showMsg('Failed to load GPIO settings', false);
             }
@@ -265,7 +266,304 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 return;
             }
             const gpio = {
-                key_input: parseInt(document.getElementById('gpioKey').value),
+                key_gpio: parseInt(document.getElementById('gpioKey').value),
+                button: parseInt(document.getElementById('gpioBtn').value),
+                led: parseInt(document.getElementById('gpioLed').value)
+            };
+            try {
+                const res = await fetch('/api/gpio', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(gpio)
+                });
+                if (res.ok) {
+                    showMsg('GPIO settings saved. Restart to apply.', true);
+                    loadGpio();
+                } else {
+                    const err = await res.text();
+                    showMsg('Failed: ' + err, false);
+                }
+            } catch (e) {
+                showMsg('Error: ' + e.message, false);
+            }
+        };
+
+        async function resetGpio() {
+            if (!confirm('Reset GPIO to default settings?')) return;
+            try {
+                const res = await fetch('/api/gpio/reset', {method: 'POST'});
+                if (res.ok) {
+                    showMsg('GPIO reset to defaults. Restart to apply.', true);
+                    loadGpio();
+                } else {
+                    showMsg('Failed to reset GPIO', false);
+                }
+            } catch (e) {
+                showMsg('Error: ' + e.message, false);
+            }
+        }
+
+        loadProfiles();
+    </script>
+</body>
+</html>"#;
+
+/// HTML template for the configuration page (server mode)
+#[cfg(feature = "server")]
+const INDEX_HTML: &str = r#"<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WifiKey Server Setup</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+        .container { max-width: 400px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 20px; color: #00d4ff; }
+        .subtitle { text-align: center; color: #888; margin-bottom: 20px; font-size: 0.9em; }
+        .card { background: #16213e; border-radius: 8px; padding: 20px; margin-bottom: 15px; }
+        .card h2 { font-size: 1.1em; margin-bottom: 15px; color: #00d4ff; }
+        label { display: block; margin-bottom: 5px; font-size: 0.9em; color: #aaa; }
+        input, select { width: 100%; padding: 10px; margin-bottom: 12px; border: 1px solid #333;
+                       border-radius: 4px; background: #0f0f23; color: #eee; font-size: 1em; }
+        input:focus { border-color: #00d4ff; outline: none; }
+        button { width: 100%; padding: 12px; border: none; border-radius: 4px; font-size: 1em;
+                cursor: pointer; margin-top: 10px; }
+        .btn-primary { background: #00d4ff; color: #000; }
+        .btn-danger { background: #ff4757; color: #fff; }
+        .btn-secondary { background: #444; color: #fff; }
+        .btn-warning { background: #ffa502; color: #000; }
+        .warning-box { background: #ff475733; border: 1px solid #ff4757; padding: 12px; border-radius: 4px; margin-bottom: 15px; }
+        .warning-box h3 { color: #ff4757; margin-bottom: 8px; }
+        .advanced-toggle { cursor: pointer; padding: 10px; background: #333; border-radius: 4px; text-align: center; }
+        .advanced-toggle:hover { background: #444; }
+        .gpio-row { display: flex; gap: 10px; }
+        .gpio-row > div { flex: 1; }
+        .profile-item { display: flex; justify-content: space-between; align-items: center;
+                       padding: 10px; background: #0f0f23; border-radius: 4px; margin-bottom: 8px; }
+        .profile-item span { font-size: 0.95em; }
+        .profile-item button { width: auto; padding: 6px 12px; margin: 0; }
+        .msg { padding: 10px; border-radius: 4px; margin-bottom: 15px; text-align: center; }
+        .msg-ok { background: #2ed573; color: #000; }
+        .msg-err { background: #ff4757; }
+        .scan-list { max-height: 150px; overflow-y: auto; }
+        .scan-item { padding: 8px; cursor: pointer; border-radius: 4px; }
+        .scan-item:hover { background: #00d4ff22; }
+        .hidden { display: none; }
+        .info-box { background: #00d4ff22; border: 1px solid #00d4ff; padding: 12px; border-radius: 4px; margin-bottom: 15px; }
+        .info-box p { font-size: 0.85em; color: #aaa; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WifiKey Server</h1>
+        <p class="subtitle">ESP32 Keying Receiver</p>
+        <div id="msg" class="msg hidden"></div>
+
+        <div class="card">
+            <h2>Saved Profiles</h2>
+            <div id="profiles"></div>
+        </div>
+
+        <div class="card">
+            <h2>Add New Profile</h2>
+            <div class="info-box">
+                <p>This ESP32 acts as a <strong>server</strong> that receives keying commands from remote clients.</p>
+            </div>
+            <form id="addForm">
+                <label>WiFi SSID</label>
+                <input type="text" id="ssid" required maxlength="32">
+                <button type="button" class="btn-secondary" onclick="scanNetworks()">Scan Networks</button>
+                <div id="scanResults" class="scan-list hidden"></div>
+
+                <label>WiFi Password</label>
+                <input type="password" id="wifipass" maxlength="64">
+
+                <label>Server Name (Your callsign/identifier)</label>
+                <input type="text" id="server" required maxlength="64" placeholder="CALLSIGN/keyer">
+
+                <label>Connection Password (Clients use this to connect)</label>
+                <input type="password" id="serverpass" maxlength="64">
+
+                <button type="submit" class="btn-primary">Add Profile</button>
+            </form>
+        </div>
+
+        <div class="card">
+            <div class="advanced-toggle" onclick="toggleAdvanced()">
+                Advanced Settings <span id="advArrow">+</span>
+            </div>
+        </div>
+
+        <div id="advancedSection" class="hidden">
+            <div class="card">
+                <h2>GPIO Settings</h2>
+                <div class="warning-box">
+                    <h3>DANGER ZONE</h3>
+                    <p>Incorrect GPIO settings can cause hardware malfunction. Only modify if you understand your hardware connections.</p>
+                </div>
+                <div id="gpioInfo"></div>
+                <form id="gpioForm">
+                    <div class="gpio-row">
+                        <div>
+                            <label>Key Output (GPIO)</label>
+                            <input type="number" id="gpioKey" min="0" max="39" required>
+                        </div>
+                        <div>
+                            <label>Button (GPIO)</label>
+                            <input type="number" id="gpioBtn" min="0" max="39" required>
+                        </div>
+                        <div>
+                            <label>LED (GPIO)</label>
+                            <input type="number" id="gpioLed" min="0" max="39" required>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn-warning">Save GPIO Settings</button>
+                    <button type="button" class="btn-secondary" onclick="resetGpio()">Reset to Defaults</button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card">
+            <button class="btn-primary" onclick="restart()">Save &amp; Restart</button>
+        </div>
+    </div>
+
+    <script>
+        function showMsg(text, ok) {
+            const msg = document.getElementById('msg');
+            msg.textContent = text;
+            msg.className = 'msg ' + (ok ? 'msg-ok' : 'msg-err');
+            setTimeout(() => msg.className = 'msg hidden', 3000);
+        }
+
+        async function loadProfiles() {
+            try {
+                const res = await fetch('/api/profiles');
+                const profiles = await res.json();
+                const container = document.getElementById('profiles');
+                if (profiles.length === 0) {
+                    container.innerHTML = '<p style="color:#666">No profiles configured</p>';
+                } else {
+                    container.innerHTML = profiles.map((p, i) =>
+                        `<div class="profile-item">
+                            <span>${p.ssid} (${p.server_name})</span>
+                            <button class="btn-danger" onclick="deleteProfile(${i})">Delete</button>
+                        </div>`
+                    ).join('');
+                }
+            } catch (e) {
+                showMsg('Failed to load profiles', false);
+            }
+        }
+
+        async function scanNetworks() {
+            const container = document.getElementById('scanResults');
+            container.innerHTML = '<p>Scanning...</p>';
+            container.className = 'scan-list';
+            try {
+                const res = await fetch('/api/scan');
+                const networks = await res.json();
+                if (networks.length === 0) {
+                    container.innerHTML = '<p style="color:#666">No networks found</p>';
+                } else {
+                    container.innerHTML = networks.map(ssid =>
+                        `<div class="scan-item" onclick="selectNetwork('${ssid}')">${ssid}</div>`
+                    ).join('');
+                }
+            } catch (e) {
+                container.innerHTML = '<p style="color:#f66">Scan failed</p>';
+            }
+        }
+
+        function selectNetwork(ssid) {
+            document.getElementById('ssid').value = ssid;
+            document.getElementById('scanResults').className = 'scan-list hidden';
+        }
+
+        document.getElementById('addForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const profile = {
+                ssid: document.getElementById('ssid').value,
+                password: document.getElementById('wifipass').value,
+                server_name: document.getElementById('server').value,
+                server_password: document.getElementById('serverpass').value
+            };
+            try {
+                const res = await fetch('/api/profiles', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(profile)
+                });
+                if (res.ok) {
+                    showMsg('Profile added', true);
+                    e.target.reset();
+                    loadProfiles();
+                } else {
+                    showMsg('Failed to add profile', false);
+                }
+            } catch (e) {
+                showMsg('Error: ' + e.message, false);
+            }
+        };
+
+        async function deleteProfile(index) {
+            if (!confirm('Delete this profile?')) return;
+            try {
+                const res = await fetch('/api/profiles/' + index, {method: 'DELETE'});
+                if (res.ok) {
+                    showMsg('Profile deleted', true);
+                    loadProfiles();
+                } else {
+                    showMsg('Failed to delete', false);
+                }
+            } catch (e) {
+                showMsg('Error: ' + e.message, false);
+            }
+        }
+
+        async function restart() {
+            showMsg('Restarting...', true);
+            try {
+                await fetch('/api/restart', {method: 'POST'});
+            } catch (e) {}
+        }
+
+        function toggleAdvanced() {
+            const section = document.getElementById('advancedSection');
+            const arrow = document.getElementById('advArrow');
+            if (section.classList.contains('hidden')) {
+                section.classList.remove('hidden');
+                arrow.textContent = '-';
+                loadGpio();
+            } else {
+                section.classList.add('hidden');
+                arrow.textContent = '+';
+            }
+        }
+
+        async function loadGpio() {
+            try {
+                const res = await fetch('/api/gpio');
+                const gpio = await res.json();
+                document.getElementById('gpioKey').value = gpio.key_gpio;
+                document.getElementById('gpioBtn').value = gpio.button;
+                document.getElementById('gpioLed').value = gpio.led;
+                document.getElementById('gpioInfo').innerHTML =
+                    `<p style="color:#888;margin-bottom:10px">Current: KeyOut=GPIO${gpio.key_gpio}, Btn=GPIO${gpio.button}, LED=GPIO${gpio.led}</p>`;
+            } catch (e) {
+                showMsg('Failed to load GPIO settings', false);
+            }
+        }
+
+        document.getElementById('gpioForm').onsubmit = async (e) => {
+            e.preventDefault();
+            if (!confirm('Are you sure you want to change GPIO settings?\n\nIncorrect settings may cause hardware malfunction.\nChanges will take effect after restart.')) {
+                return;
+            }
+            const gpio = {
+                key_gpio: parseInt(document.getElementById('gpioKey').value),
                 button: parseInt(document.getElementById('gpioBtn').value),
                 led: parseInt(document.getElementById('gpioLed').value)
             };
@@ -593,8 +891,8 @@ fn parse_profile_json(data: &[u8]) -> Option<WifiProfile> {
 /// Convert GPIO config to JSON
 fn gpio_to_json(gpio: &GpioConfig) -> String {
     format!(
-        r#"{{"key_input":{},"button":{},"led":{}}}"#,
-        gpio.key_input, gpio.button, gpio.led
+        r#"{{"key_gpio":{},"button":{},"led":{}}}"#,
+        gpio.key_gpio, gpio.button, gpio.led
     )
 }
 
@@ -623,7 +921,7 @@ fn parse_gpio_json(data: &[u8]) -> Option<GpioConfig> {
     };
 
     Some(GpioConfig {
-        key_input: extract_num("key_input")?,
+        key_gpio: extract_num("key_gpio")?,
         button: extract_num("button")?,
         led: extract_num("led")?,
     })

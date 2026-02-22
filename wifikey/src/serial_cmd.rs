@@ -89,6 +89,11 @@ pub fn process_command(line: &str, config_manager: &Arc<Mutex<ConfigManager>>) -
 }
 
 fn help_text() -> String {
+    #[cfg(feature = "server")]
+    let key_label = "KEY_OUTPUT";
+    #[cfg(not(feature = "server"))]
+    let key_label = "KEY_INPUT";
+
     format!(
         "WifiKey Serial Commands:\r\n\
          AT          - Test connection\r\n\
@@ -96,7 +101,7 @@ fn help_text() -> String {
          AT+ADD=<ssid>,<wifipass>,<server>,<serverpass>[,<tethering>] - Add profile\r\n\
          AT+DEL=<n>  - Delete profile at index n\r\n\
          AT+CLEAR    - Clear all profiles\r\n\
-         AT+GPIO     - Show GPIO settings\r\n\
+         AT+GPIO     - Show GPIO settings ({key_label})\r\n\
          AT+GPIO=<key>,<btn>,<led> - Set GPIO pins (DANGER!)\r\n\
          AT+GPIO=DEFAULT - Reset GPIO to defaults\r\n\
          AT+RESTART  - Restart device\r\n\
@@ -107,8 +112,13 @@ fn help_text() -> String {
 }
 
 fn device_info() -> String {
+    #[cfg(feature = "server")]
+    let mode = "Server (Keying Receiver)";
+    #[cfg(not(feature = "server"))]
+    let mode = "Client";
+
     format!(
-        "WifiKey ESP32 Client\r\n\
+        "WifiKey ESP32 {mode}\r\n\
          Version: {}\r\n\
          {}",
         env!("CARGO_PKG_VERSION"),
@@ -205,14 +215,19 @@ fn show_gpio(config_manager: &Arc<Mutex<ConfigManager>>) -> String {
     let defaults = GpioConfig::default();
     let is_custom = gpio != defaults;
 
+    #[cfg(feature = "server")]
+    let key_label = "KEY_OUTPUT";
+    #[cfg(not(feature = "server"))]
+    let key_label = "KEY_INPUT";
+
     format!(
         "GPIO Configuration {}:\r\n\
-         KEY_INPUT = GPIO{}\r\n\
-         BUTTON    = GPIO{}\r\n\
-         LED       = GPIO{}\r\n\
+         {key_label}  = GPIO{}\r\n\
+         BUTTON     = GPIO{}\r\n\
+         LED        = GPIO{}\r\n\
          {}",
         if is_custom { "(custom)" } else { "(default)" },
-        gpio.key_input,
+        gpio.key_gpio,
         gpio.button,
         gpio.led,
         OK
@@ -246,7 +261,7 @@ fn set_gpio(args: &str, config_manager: &Arc<Mutex<ConfigManager>>) -> String {
             .map_err(|_| format!("Invalid pin: {s}"))
     };
 
-    let key_input = match parse_pin(parts[0]) {
+    let key_gpio = match parse_pin(parts[0]) {
         Ok(v) => v,
         Err(e) => return format!("{e}\r\n{ERROR}"),
     };
@@ -260,7 +275,7 @@ fn set_gpio(args: &str, config_manager: &Arc<Mutex<ConfigManager>>) -> String {
     };
 
     let config = GpioConfig {
-        key_input,
+        key_gpio,
         button,
         led,
     };
@@ -278,7 +293,7 @@ fn set_gpio(args: &str, config_manager: &Arc<Mutex<ConfigManager>>) -> String {
         Use AT+GPIO=DEFAULT to restore.\r\n";
 
     match config_manager.lock().unwrap().save_gpio_config(&config) {
-        Ok(_) => format!("GPIO set: key={key_input}, btn={button}, led={led}{warning}{OK}"),
+        Ok(_) => format!("GPIO set: key={key_gpio}, btn={button}, led={led}{warning}{OK}"),
         Err(e) => format!("Failed: {e:?}\r\n{ERROR}"),
     }
 }

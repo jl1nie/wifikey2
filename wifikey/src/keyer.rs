@@ -1,4 +1,4 @@
-//! GPIO-based keyer for ESP32 server
+//! GPIO-based keyer for ESP32 server (server feature only)
 //!
 //! Receives keying commands from remote client and drives GPIO output
 //! to control rig keying via photocoupler.

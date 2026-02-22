@@ -7,6 +7,7 @@ rust-version = "1.71"
 
 [features]
 default = ["std", "esp-idf-svc/native", "board_m5atom"]
+server = []
 
 pio = ["std", "esp-idf-svc/pio"]
 std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std"]

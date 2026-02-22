@@ -11,8 +11,11 @@ use esp_idf_svc::{
         EspWifi,
     },
 };
+#[cfg(not(feature = "server"))]
 use esp_idf_hal::delay::FreeRtos;
-use log::{info, warn};
+use log::info;
+#[cfg(not(feature = "server"))]
+use log::warn;
 
 use crate::config::WifiProfile;
 
@@ -165,7 +168,10 @@ impl<'a> WifiManager<'a> {
 
     /// Generate AP SSID with MAC suffix for uniqueness
     pub fn generate_ap_ssid(&self) -> String {
-        format!("WifiKey-{}", self.get_mac_suffix())
+        #[cfg(feature = "server")]
+        return format!("WkServer-{}", self.get_mac_suffix());
+        #[cfg(not(feature = "server"))]
+        return format!("WifiKey-{}", self.get_mac_suffix());
     }
 
     /// Stop WiFi
@@ -185,6 +191,7 @@ impl<'a> WifiManager<'a> {
     /// Cleanly disconnects first (clearing AP's association state),
     /// waits 3 seconds to avoid "comeback time" rejection, then
     /// rescans and reconnects using the provided profiles.
+    #[cfg(not(feature = "server"))]
     pub fn reconnect(&mut self, profiles: &[WifiProfile]) -> Result<WifiProfile> {
         warn!("Disconnecting WiFi for clean reconnect...");
         let _ = self.wifi.disconnect();

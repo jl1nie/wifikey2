@@ -74,15 +74,15 @@ This project consists of an ESP32-based wireless CW paddle and a server applicat
                                          └─────────────────┘
 ```
 
-### PC-less Configuration (wifikey-esp32-server)
+### PC-less Configuration (wifikey --features server)
 
 ```
 ┌─────────────────┐     MQTT/STUN        ┌─────────────────┐
-│  wifikey        │◄────────────────────►│wifikey-esp32-   │
-│  (ESP32 Client) │     KCP (UDP)        │server (ESP32)   │
-│                 │                      │                 │
-│  - Paddle input │                      │  - GPIO output  │
-│  - LED display  │                      │  - Keying       │
+│  wifikey        │◄────────────────────►│  wifikey        │
+│  (ESP32 Client) │     KCP (UDP)        │  (ESP32 Server) │
+│                 │                      │  --features     │
+│  - Paddle input │                      │    server       │
+│  - LED display  │                      │  - GPIO output  │
 └─────────────────┘                      └────────┬────────┘
                                                   │ Photocoupler
                                          ┌────────▼────────┐
@@ -90,7 +90,7 @@ This project consists of an ESP32-based wireless CW paddle and a server applicat
                                          └─────────────────┘
 ```
 
-With wifikey-esp32-server, remote keying is possible without a PC. The ESP32 server drives a photocoupler via GPIO output to key the transceiver.
+With `--features server`, the same `wifikey` crate runs as a standalone server. The ESP32 drives a photocoupler via GPIO output to key the transceiver, no PC required.
 
 ### Connection Establishment Flow
 
@@ -392,7 +392,7 @@ server_password = "your-password"
 rigcontrol_port = "COM3"      # Windows (Linux: /dev/ttyUSB0)
 keying_port = "COM4"
 use_rts_for_keying = true
-lua_script = "yaesu_ft891.lua"  # Lua CAT script name
+rig_script = "yaesu_ft891.lua"  # Lua CAT script name
 ```
 
 **GUI Settings**: Also configurable via in-app settings
@@ -515,23 +515,24 @@ The server app displays real-time statistics:
 
 ### ESP32 Server (PC-less Operation)
 
-wifikey-esp32-server enables remote keying without a PC.
+The `wifikey` crate with `--features server` enables remote keying without a PC.
 
 #### ESP32 Server Setup
 
 Same configuration methods as client (AP Mode + Web UI or AT commands).
 
-1. Start ESP32 server (enters AP mode on first boot)
-2. Connect to `WkServer-XXXXXX` WiFi
-3. Open `http://192.168.4.1`
-4. Configure:
+1. Flash server firmware: `.\flash.ps1 -Server`
+2. On first boot, ESP32 enters AP mode automatically
+3. Connect to `WkServer-XXXXXX` WiFi
+4. Open `http://192.168.4.1`
+5. Configure:
    - WiFi SSID / password
    - Server name (your identifier, e.g., `JA1XXX/keyer`)
    - Connection password (clients use this to connect)
 
 #### ESP32 Server AT Commands
 
-Same commands as client, but GPIO display differs:
+Same commands as client. GPIO display shows `KEY_OUTPUT` (same pin, output direction):
 
 ```
 AT+GPIO     # Show GPIO settings (KEY_OUTPUT, BUTTON, LED)
@@ -540,12 +541,15 @@ AT+GPIO=19,39,27  # Change GPIO settings
 
 #### ESP32 Server Build
 
-```bash
-# Build
-cargo make esp-server-build-release
+```powershell
+# Flash (client)
+.\flash.ps1
 
-# Flash
-cargo make esp-server-flash
+# Flash (server — keying receiver, PC-less)
+.\flash.ps1 -Server
+
+# Specify board and port
+.\flash.ps1 -Server -Board esp32_wrover -Port COM5
 ```
 
 ## Development
@@ -564,28 +568,17 @@ cargo make esp-server-flash
 
 Default GPIO assignments per board. Configurable via Web UI or AT commands.
 
-##### wifikey (Client)
+##### wifikey (Client and Server — same GPIO pin, direction differs)
 
-| Board | KEY_INPUT | BUTTON | LED |
-|-------|-----------|--------|-----|
+| Board | KEY_GPIO | BUTTON | LED |
+|-------|----------|--------|-----|
 | M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (Serial LED) |
 | ESP32-WROVER | GPIO4 | GPIO12 | GPIO16 |
 | Other | GPIO4 | GPIO0 | GPIO2 |
 
-- **KEY_INPUT**: Paddle/straight key input (internal pull-up, via photocoupler)
-- **BUTTON**: ATU trigger / AP mode switch (internal pull-up)
-- **LED**: Status indicator
-
-##### wifikey-esp32-server (Server)
-
-| Board | KEY_OUTPUT | BUTTON | LED |
-|-------|------------|--------|-----|
-| M5Atom Lite | GPIO19 | GPIO39 | GPIO27 (Serial LED) |
-| ESP32-WROVER | GPIO4 | GPIO12 | GPIO16 |
-| Other | GPIO4 | GPIO0 | GPIO2 |
-
-- **KEY_OUTPUT**: Keying output (to photocoupler, active = transmit)
-- **BUTTON**: AP mode switch (internal pull-up)
+- **KEY_GPIO** (client): Paddle/straight key input (internal pull-up, via photocoupler)
+- **KEY_GPIO** (server): Keying output to photocoupler (active = transmit)
+- **BUTTON**: ATU trigger (client) / AP mode switch (server) (internal pull-up)
 - **LED**: Status indicator
 
 #### Circuit Design
@@ -691,7 +684,7 @@ cargo install cargo-make
 | Linux | `libwebkit2gtk-4.1`, `libgtk-3` |
 | macOS | Xcode Command Line Tools |
 
-#### wifikey / wifikey-esp32-server (ESP32)
+#### wifikey (ESP32, client and server)
 
 | Component | Version |
 |-----------|---------|
@@ -724,19 +717,18 @@ wifikey2/
 ├── README.md / README-ja.md
 ├── LICENSE
 │
-├── wifikey/                      # ESP32 client firmware
-│   ├── Cargo.toml                #   crate config (toml-cfg build-time settings)
+├── wifikey/                      # ESP32 firmware (client + server mode)
+│   ├── Cargo.toml                #   crate config; [features] server = []
 │   ├── cfg.toml                  #   client build-time config
 │   ├── rust-toolchain.toml       #   esp toolchain
 │   ├── .cargo/config.toml        #   ESP-IDF build env vars
 │   └── src/
-│       └── main.rs               #   entry point (WiFi, mDNS, paddle, LED)
-│
-├── wifikey-esp32-server/         # ESP32 server firmware (PC-less keying)
-│   ├── Cargo.toml
-│   ├── rust-toolchain.toml
-│   └── src/
-│       └── main.rs               #   entry point (GPIO keying output)
+│       ├── main.rs               #   entry point (common AP setup + #[cfg] loop split)
+│       ├── config.rs             #   profile/GPIO storage (unified key_gpio field)
+│       ├── keyer.rs              #   GPIO keying output (server feature only)
+│       ├── webserver.rs          #   AP mode config UI (#[cfg] HTML variants)
+│       ├── wifi.rs               #   WiFi connectivity (SSID #[cfg] split)
+│       └── serial_cmd.rs         #   AT command handler (#[cfg] help text split)
 │
 ├── wifikey-server/               # Desktop GUI application (Tauri 2.x)
 │   ├── package.json              #   npm / Tauri CLI
@@ -778,8 +770,7 @@ wifikey2/
 
 | Crate | Version | Description |
 |-------|---------|-------------|
-| `wifikey` | 0.2.0 | ESP32 client firmware (paddle input) |
-| `wifikey-esp32-server` | 0.1.0 | ESP32 server firmware (PC-less rig control) |
+| `wifikey` | 0.2.0 | ESP32 firmware (client; `--features server` for PC-less server mode) |
 | `wifikey-server` | 0.3.1 | Desktop GUI application (**Tauri 2.x**) |
 | `wksocket` | 0.1.0 | KCP-based communication library |
 | `mqttstunclient` | 0.1.0 | MQTT + STUN client |
@@ -828,15 +819,19 @@ The `flash.ps1` script handles the full build-flash-monitor cycle for the ESP32 
 #### Usage
 
 ```powershell
-# Basic usage (M5Atom Lite, auto-detect COM port, debug build)
+# Client (paddle side) — default
 .\flash.ps1
+
+# Server (rig side, PC-less operation)
+.\flash.ps1 -Server
 
 # Specify board and COM port
 .\flash.ps1 -Board m5atom -Port COM3
-.\flash.ps1 -Board esp32_wrover -Port COM5
+.\flash.ps1 -Server -Board esp32_wrover -Port COM5
 
 # Release build
 .\flash.ps1 -Release
+.\flash.ps1 -Server -Release
 
 # Monitor only (no build/flash, useful for viewing serial output)
 .\flash.ps1 -MonitorOnly
@@ -851,6 +846,7 @@ The `flash.ps1` script handles the full build-flash-monitor cycle for the ESP32 
 | `-Port` | COM port (e.g. `COM3`) | auto-detect | Serial port |
 | `-Release` | switch | off | Release (optimized) build |
 | `-MonitorOnly` | switch | off | Skip build/flash, open serial monitor only |
+| `-Server` | switch | off | Build as ESP32 server (keying receiver, PC-less) |
 
 #### What flash.ps1 does
 
@@ -878,10 +874,8 @@ cargo install cargo-make
 | `cargo make esp-build-release` | Build ESP32 client (release) |
 | `cargo make esp-image` | Create client binary (`wifikey/wifikey.bin`) |
 | `cargo make esp-flash` | Flash ESP32 client |
-| `cargo make esp-server-build` | Build ESP32 server (debug) |
-| `cargo make esp-server-build-release` | Build ESP32 server (release) |
-| `cargo make esp-server-image` | Create server binary |
-| `cargo make esp-server-flash` | Flash ESP32 server |
+| `cargo make esp-server-build` | Build ESP32 server firmware (debug, `--features server`) |
+| `cargo make esp-server-build-release` | Build ESP32 server firmware (release) |
 | `cargo make esp-monitor` | Serial monitor |
 | `cargo make esp-erase` | Erase ESP32 flash |
 | `cargo make esp-clippy` | ESP32 client clippy |

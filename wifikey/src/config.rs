@@ -22,8 +22,8 @@ const MAX_SERVER_NAME_LEN: usize = 64;
 pub mod default_gpio {
     #[cfg(feature = "board_m5atom")]
     mod inner {
-        /// Key input pin (connected to paddle/straight key via photocoupler)
-        pub const KEY_INPUT: u8 = 19;
+        /// Key GPIO pin (input on client, output on server)
+        pub const KEY_GPIO: u8 = 19;
         /// Button input pin (for ATU/AP mode)
         pub const BUTTON: u8 = 39;
         /// LED data pin (WS2812) - note: serial LED uses fixed pin
@@ -32,8 +32,8 @@ pub mod default_gpio {
 
     #[cfg(all(feature = "board_esp32_wrover", not(feature = "board_m5atom")))]
     mod inner {
-        /// Key input pin (connected to paddle/straight key via photocoupler)
-        pub const KEY_INPUT: u8 = 4;
+        /// Key GPIO pin (input on client, output on server)
+        pub const KEY_GPIO: u8 = 4;
         /// Button input pin (for ATU/AP mode)
         pub const BUTTON: u8 = 12;
         /// LED output pin
@@ -42,7 +42,7 @@ pub mod default_gpio {
 
     #[cfg(not(any(feature = "board_m5atom", feature = "board_esp32_wrover")))]
     mod inner {
-        pub const KEY_INPUT: u8 = 4;
+        pub const KEY_GPIO: u8 = 4;
         pub const BUTTON: u8 = 0;
         pub const LED: u8 = 2;
     }
@@ -60,8 +60,8 @@ pub mod default_gpio {
 /// Only modify if you understand your hardware connections.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GpioConfig {
-    /// GPIO pin for key input (from paddle/straight key)
-    pub key_input: u8,
+    /// GPIO pin for key (input from paddle/key on client; output to rig on server)
+    pub key_gpio: u8,
     /// GPIO pin for button input (ATU trigger / AP mode)
     pub button: u8,
     /// GPIO pin for LED output
@@ -71,7 +71,7 @@ pub struct GpioConfig {
 impl Default for GpioConfig {
     fn default() -> Self {
         Self {
-            key_input: default_gpio::KEY_INPUT,
+            key_gpio: default_gpio::KEY_GPIO,
             button: default_gpio::BUTTON,
             led: default_gpio::LED,
         }
@@ -80,13 +80,13 @@ impl Default for GpioConfig {
 
 impl GpioConfig {
     /// Serialize to bytes for NVS storage
-    /// Format: [magic][version][key_input][button][led]
+    /// Format: [magic][version][key_gpio][button][led]
     fn to_bytes(&self) -> Vec<u8> {
         vec![
             0x47,
             0x50, // Magic: "GP"
             0x01, // Version 1
-            self.key_input,
+            self.key_gpio,
             self.button,
             self.led,
         ]
@@ -104,7 +104,7 @@ impl GpioConfig {
             return Err(anyhow!("Unsupported GPIO config version"));
         }
         Ok(Self {
-            key_input: data[3],
+            key_gpio: data[3],
             button: data[4],
             led: data[5],
         })
@@ -116,7 +116,7 @@ impl GpioConfig {
         let reserved_pins = [6, 7, 8, 9, 10, 11]; // Flash pins
         let max_gpio = 39;
 
-        for &pin in &[self.key_input, self.button, self.led] {
+        for &pin in &[self.key_gpio, self.button, self.led] {
             if pin > max_gpio {
                 return Err(anyhow!("GPIO {} out of range (max {})", pin, max_gpio));
             }
@@ -126,7 +126,7 @@ impl GpioConfig {
         }
 
         // Check for duplicates
-        if self.key_input == self.button || self.key_input == self.led || self.button == self.led {
+        if self.key_gpio == self.button || self.key_gpio == self.led || self.button == self.led {
             return Err(anyhow!("GPIO pins must be unique"));
         }
 
@@ -390,7 +390,7 @@ impl ConfigManager {
                     if config.validate().is_ok() {
                         info!(
                             "Loaded GPIO config: key={}, btn={}, led={}",
-                            config.key_input, config.button, config.led
+                            config.key_gpio, config.button, config.led
                         );
                         return config;
                     }
@@ -424,7 +424,7 @@ impl ConfigManager {
 
         info!(
             "Saved GPIO config: key={}, btn={}, led={}",
-            config.key_input, config.button, config.led
+            config.key_gpio, config.button, config.led
         );
         Ok(())
     }
