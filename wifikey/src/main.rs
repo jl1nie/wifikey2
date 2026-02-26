@@ -20,16 +20,12 @@ mod webserver;
 mod wifi;
 
 use anyhow::Result;
-use esp_idf_hal::{delay::FreeRtos, gpio::*, peripherals::Peripherals};
-use esp_idf_svc::{
-    eventloop::EspSystemEventLoop,
-    mdns::EspMdns,
-    nvs::EspDefaultNvsPartition,
-};
-#[cfg(not(feature = "server"))]
-use esp_idf_svc::mdns::{Interface, Protocol, QueryResult};
 #[cfg(feature = "server")]
 use esp_idf_hal::gpio::AnyOutputPin;
+use esp_idf_hal::{delay::FreeRtos, gpio::*, peripherals::Peripherals};
+#[cfg(not(feature = "server"))]
+use esp_idf_svc::mdns::{Interface, Protocol, QueryResult};
+use esp_idf_svc::{eventloop::EspSystemEventLoop, mdns::EspMdns, nvs::EspDefaultNvsPartition};
 #[cfg(feature = "board_m5atom")]
 use smart_leds::{SmartLedsWrite, RGB8};
 #[cfg(feature = "board_m5atom")]
@@ -48,22 +44,20 @@ use std::sync::atomic::{AtomicBool, AtomicU32};
 use log::LevelFilter;
 use log::{error, info, warn};
 use mqttstunclient::MQTTStunClient;
-use wksocket::{
-    sleep, MDNS_PROTO, MDNS_SERVICE_NAME,
-};
-#[cfg(not(feature = "server"))]
-use wksocket::{response, tick_count, MessageSND, WkSender, WkSession, MAX_SLOTS};
 #[cfg(feature = "server")]
 use wksocket::{challenge, WkListener, WkReceiver};
+#[cfg(not(feature = "server"))]
+use wksocket::{response, tick_count, MessageSND, WkSender, WkSession, MAX_SLOTS};
+use wksocket::{sleep, MDNS_PROTO, MDNS_SERVICE_NAME};
 
-use config::{ConfigManager, WifiProfile};
 #[cfg(feature = "server")]
 use config::GpioConfig;
+use config::{ConfigManager, WifiProfile};
+#[cfg(feature = "server")]
+use keyer::GpioKeyer;
 use serial_cmd::SerialCommandHandler;
 use webserver::ConfigWebServer;
 use wifi::WifiManager;
-#[cfg(feature = "server")]
-use keyer::GpioKeyer;
 
 // Client-only timing constants
 #[cfg(not(feature = "server"))]
@@ -377,33 +371,45 @@ fn check_long_press<T: InputPin>(button: &PinDriver<T, Input>, duration_ms: u32)
 #[cfg(not(feature = "server"))]
 fn try_mdns_discovery(mdns: &mut EspMdns, server_name: &str) -> Option<SocketAddr> {
     let new_qr = || QueryResult {
-        instance_name: None, hostname: None, port: 0,
-        txt: Vec::new(), addr: Vec::new(),
-        interface: Interface::STA, ip_protocol: Protocol::V4,
+        instance_name: None,
+        hostname: None,
+        port: 0,
+        txt: Vec::new(),
+        addr: Vec::new(),
+        interface: Interface::STA,
+        ip_protocol: Protocol::V4,
     };
     let mut results = [new_qr(), new_qr(), new_qr(), new_qr()];
-    let count = mdns.query_ptr(
-        MDNS_SERVICE_NAME, MDNS_PROTO,
-        std::time::Duration::from_secs(5),
-        4, &mut results,
-    ).unwrap_or(0);
-    info!("mDNS: query returned {} results", count);
+    let count = mdns
+        .query_ptr(
+            MDNS_SERVICE_NAME,
+            MDNS_PROTO,
+            std::time::Duration::from_secs(5),
+            4,
+            &mut results,
+        )
+        .unwrap_or(0);
+    info!("mDNS: query returned {count} results");
     for r in &results[..count] {
-        info!("mDNS: found '{:?}' addr={:?} port={}", r.instance_name, r.addr, r.port);
+        info!(
+            "mDNS: found '{:?}' addr={:?} port={}",
+            r.instance_name, r.addr, r.port
+        );
         if r.instance_name.as_deref() == Some(server_name) {
-            for addr in &r.addr {
+            if let Some(addr) = r.addr.first() {
                 let sock_addr = SocketAddr::new(*addr, r.port);
-                info!("mDNS: server matched at {}", sock_addr);
+                info!("mDNS: server matched at {sock_addr}");
                 return Some(sock_addr);
             }
         }
     }
-    info!("mDNS: server '{}' not found", server_name);
+    info!("mDNS: server '{server_name}' not found");
     None
 }
 
 /// Main keying loop - handles connection and keying (client only)
 #[cfg(not(feature = "server"))]
+#[allow(clippy::too_many_arguments)]
 fn run_keying_loop<K: InputPin, B: InputPin>(
     profile: &WifiProfile,
     wifi_manager: &mut WifiManager,
@@ -440,21 +446,22 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
             for round in 0..2 {
                 // mDNS step (skip if tethering)
                 if !profile.tethering {
-                    info!("Discovery round {}: trying mDNS...", round);
+                    info!("Discovery round {round}: trying mDNS...");
                     if let Some(addr) = try_mdns_discovery(mdns, &profile.server_name) {
                         break 'discovery Some((addr, None));
                     }
                 }
 
                 // STUN/MQTT step
-                info!("Discovery round {}: trying STUN/MQTT...", round);
-                let mqtt_udp = match UdpSocket::bind("0.0.0.0:0") {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to bind UDP socket: {e}");
-                        continue;
-                    }
-                };
+                info!("Discovery round {round}: trying STUN/MQTT...");
+                let mqtt_udp =
+                    match UdpSocket::bind("[::]:0").or_else(|_| UdpSocket::bind("0.0.0.0:0")) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to bind UDP socket: {e}");
+                            continue;
+                        }
+                    };
                 let mut stun_client = MQTTStunClient::new(
                     profile.server_name.clone(),
                     &profile.server_password,
@@ -463,7 +470,7 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                 );
                 stun_client.sanity_check();
                 if let Some(addr) = stun_client.get_server_addr(&mqtt_udp) {
-                    info!("MQTT/STUN: server found at {}", addr);
+                    info!("MQTT/STUN: server found at {addr}");
                     break 'discovery Some((addr, Some(mqtt_udp)));
                 }
             }
@@ -479,11 +486,15 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
         info!("Remote Server = {remote_addr}");
         let udp = match punched_udp {
             Some(udp) => {
-                info!("Reusing hole-punched UDP socket (local={})", udp.local_addr().unwrap());
+                info!(
+                    "Reusing hole-punched UDP socket (local={})",
+                    udp.local_addr().unwrap()
+                );
                 udp
             }
             None => {
-                let Ok(udp) = UdpSocket::bind("0.0.0.0:0") else {
+                let Ok(udp) = UdpSocket::bind("[::]:0").or_else(|_| UdpSocket::bind("0.0.0.0:0"))
+                else {
                     error!("Failed to bind UDP socket");
                     sleep(5000);
                     continue;
@@ -630,7 +641,7 @@ fn run_server_loop(
 
     loop {
         // Bind UDP socket
-        let Ok(udp) = UdpSocket::bind("0.0.0.0:0") else {
+        let Ok(udp) = UdpSocket::bind("[::]:0").or_else(|_| UdpSocket::bind("0.0.0.0:0")) else {
             error!("Failed to bind UDP socket");
             sleep(5000);
             continue;
@@ -645,8 +656,8 @@ fn run_server_loop(
         );
 
         // Get and publish our address
-        if let Some(client_addr) = stun_client.get_client_addr(&udp) {
-            info!("Published address: {}", client_addr);
+        if let Some(result) = stun_client.get_client_addr(&udp) {
+            info!("Published address: {}", result.peer_addr);
         } else if let Ok(addr) = udp.local_addr() {
             info!("Local address: {}", addr);
         } else {
@@ -659,8 +670,17 @@ fn run_server_loop(
         if let Ok(local_addr) = udp.local_addr() {
             let port = local_addr.port();
             mdns.remove_service(MDNS_SERVICE_NAME, MDNS_PROTO).ok();
-            match mdns.add_service(Some(&profile.server_name), MDNS_SERVICE_NAME, MDNS_PROTO, port, &[]) {
-                Ok(_) => info!("mDNS: '{}' registered on port {}", profile.server_name, port),
+            match mdns.add_service(
+                Some(&profile.server_name),
+                MDNS_SERVICE_NAME,
+                MDNS_PROTO,
+                port,
+                &[],
+            ) {
+                Ok(_) => info!(
+                    "mDNS: '{}' registered on port {}",
+                    profile.server_name, port
+                ),
                 Err(e) => warn!("mDNS registration failed: {e:?}"),
             }
         }

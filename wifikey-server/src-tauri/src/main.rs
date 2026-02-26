@@ -83,11 +83,9 @@ async fn run_rig_action(state: State<'_, AppState>, name: String) -> Result<(), 
         let guard = state.server.lock().await;
         guard.as_ref().cloned().ok_or("Server not running")?
     };
-    tokio::task::spawn_blocking(move || {
-        server.run_rig_action(&name).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| format!("Task join error: {}", e))?
+    tokio::task::spawn_blocking(move || server.run_rig_action(&name).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| format!("Task join error: {}", e))?
 }
 
 /// Get current configuration
@@ -310,6 +308,9 @@ async fn restart_server_internal(
         config.keying_port.clone(),
         config.use_rts_for_keying,
         config.rig_script.clone(),
+        config.turn_server.clone(),
+        config.turn_username.clone(),
+        config.turn_password.clone(),
     ));
 
     // Create new server
@@ -333,6 +334,9 @@ fn init_server(
         config.keying_port.clone(),
         config.use_rts_for_keying,
         config.rig_script.clone(),
+        config.turn_server.clone(),
+        config.turn_username.clone(),
+        config.turn_password.clone(),
     ));
 
     let server = WifiKeyServer::new(wk_config, remote_stats)
@@ -381,9 +385,17 @@ fn main() {
                 .level(log::LevelFilter::Info)
                 .level_for("mqttstunclient", log::LevelFilter::Warn)
                 .level_for("rumqttc", log::LevelFilter::Warn)
-                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout))
-                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: Some("wifikey2.log".into()) }))
-                .target(tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview))
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::Stdout,
+                ))
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::LogDir {
+                        file_name: Some("wifikey2.log".into()),
+                    },
+                ))
+                .target(tauri_plugin_log::Target::new(
+                    tauri_plugin_log::TargetKind::Webview,
+                ))
                 .build(),
         )
         .manage(app_state)
@@ -407,8 +419,12 @@ fn main() {
         .setup(move |app| {
             log::info!("WiFiKey2 starting...");
             log::info!("Config dir: {}", AppConfig::config_dir());
-            log::info!("Config: server_name={}, rigcontrol={}, keying={}",
-                init_config.server_name, init_config.rigcontrol_port, init_config.keying_port);
+            log::info!(
+                "Config: server_name={}, rigcontrol={}, keying={}",
+                init_config.server_name,
+                init_config.rigcontrol_port,
+                init_config.keying_port
+            );
 
             // Initialize server now that logging is active
             let state: State<'_, AppState> = app.state();
@@ -430,7 +446,7 @@ fn main() {
             // Start PWA HTTP + WebSocket server
             let pwa_state = pwa_server::PwaState {
                 password: Arc::new(init_config.server_password.clone()),
-                server:   state.server.clone(),
+                server: state.server.clone(),
                 remote_stats: state.remote_stats.clone(),
             };
             let pwa_port = init_config.pwa_port;

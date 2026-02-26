@@ -22,6 +22,12 @@ pub struct AppConfig {
     pub rig_script: String,
     #[serde(default = "default_pwa_port")]
     pub pwa_port: u16,
+    #[serde(default)]
+    pub turn_server: Option<String>,
+    #[serde(default)]
+    pub turn_username: Option<String>,
+    #[serde(default)]
+    pub turn_password: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -34,6 +40,9 @@ impl Default for AppConfig {
             use_rts_for_keying: true,
             rig_script: default_rig_script(),
             pwa_port: default_pwa_port(),
+            turn_server: None,
+            turn_username: None,
+            turn_password: None,
         }
     }
 }
@@ -74,8 +83,8 @@ impl AppConfig {
 
     /// Get the config file path (%APPDATA%\com.wifikey2.server\cfg.toml)
     fn config_path() -> Result<PathBuf> {
-        let appdata = std::env::var("APPDATA")
-            .with_context(|| "APPDATA environment variable not set")?;
+        let appdata =
+            std::env::var("APPDATA").with_context(|| "APPDATA environment variable not set")?;
         let config_dir = PathBuf::from(appdata).join(Self::APP_ID);
         if !config_dir.exists() {
             fs::create_dir_all(&config_dir)

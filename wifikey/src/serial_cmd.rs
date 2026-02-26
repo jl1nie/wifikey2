@@ -150,7 +150,9 @@ fn add_profile(args: &str, config_manager: &Arc<Mutex<ConfigManager>>) -> String
     let parts: Vec<&str> = args.splitn(5, ',').collect();
 
     if parts.len() < 3 {
-        return format!("Usage: AT+ADD=<ssid>,<wifipass>,<server>,<serverpass>[,<tethering>]\r\n{ERROR}");
+        return format!(
+            "Usage: AT+ADD=<ssid>,<wifipass>,<server>,<serverpass>[,<tethering>]\r\n{ERROR}"
+        );
     }
 
     let ssid = parts[0].trim();

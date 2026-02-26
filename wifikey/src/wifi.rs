@@ -3,6 +3,8 @@
 //! Handles WiFi scanning, connection, and AP mode for configuration.
 
 use anyhow::{anyhow, Result};
+#[cfg(not(feature = "server"))]
+use esp_idf_hal::delay::FreeRtos;
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::peripheral,
@@ -11,8 +13,6 @@ use esp_idf_svc::{
         EspWifi,
     },
 };
-#[cfg(not(feature = "server"))]
-use esp_idf_hal::delay::FreeRtos;
 use log::info;
 #[cfg(not(feature = "server"))]
 use log::warn;
@@ -126,7 +126,11 @@ impl<'a> WifiManager<'a> {
     /// Start Access Point mode for configuration
     ///
     /// Creates a WiFi network that users can connect to for configuration.
-    pub fn start_ap_mode(&mut self, ssid: &str, password: Option<&str>) -> Result<std::net::Ipv4Addr> {
+    pub fn start_ap_mode(
+        &mut self,
+        ssid: &str,
+        password: Option<&str>,
+    ) -> Result<std::net::Ipv4Addr> {
         info!("Starting AP mode with SSID: {ssid}");
 
         let auth_method = match password {

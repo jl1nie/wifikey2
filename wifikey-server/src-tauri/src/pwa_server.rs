@@ -21,12 +21,12 @@ use tokio::sync::mpsc;
 use crate::server::{RemoteStats, WifiKeyServer};
 
 // ── 埋め込み静的ファイル ───────────────────────────────────────────────────
-static INDEX_HTML: &str    = include_str!("../../pwa/index.html");
-static APP_JS: &str        = include_str!("../../pwa/app.js");
-static STYLES_CSS: &str    = include_str!("../../pwa/styles.css");
+static INDEX_HTML: &str = include_str!("../../pwa/index.html");
+static APP_JS: &str = include_str!("../../pwa/app.js");
+static STYLES_CSS: &str = include_str!("../../pwa/styles.css");
 static MANIFEST_JSON: &str = include_str!("../../pwa/manifest.json");
 // アイコンは既存の Tauri アプリアイコンを流用
-static ICON_PNG: &[u8]     = include_bytes!("../icons/128x128.png");
+static ICON_PNG: &[u8] = include_bytes!("../icons/128x128.png");
 
 // ── 共有状態 ──────────────────────────────────────────────────────────────
 #[derive(Clone)]
@@ -43,11 +43,15 @@ pub struct PwaState {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientMsg {
-    Auth { password: String },
+    Auth {
+        password: String,
+    },
     KeyDown,
     KeyUp,
     /// cmd は文字列 ("GetState") またはオブジェクト ({"SetFreqA":14025000} 等)
-    RigCmd { cmd: Value },
+    RigCmd {
+        cmd: Value,
+    },
 }
 
 /// サーバー → クライアント
@@ -67,25 +71,42 @@ enum ServerMsg {
         rtt_ms: u64,
         kcp_connected: bool,
     },
-    Error { message: String },
+    Error {
+        message: String,
+    },
 }
 
 // ── 静的ファイルハンドラ ──────────────────────────────────────────────────
 
 async fn serve_index() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], INDEX_HTML)
+    (
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        INDEX_HTML,
+    )
 }
 
 async fn serve_app_js() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "application/javascript; charset=utf-8")], APP_JS)
+    (
+        [(
+            header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        APP_JS,
+    )
 }
 
 async fn serve_styles() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], STYLES_CSS)
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        STYLES_CSS,
+    )
 }
 
 async fn serve_manifest() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "application/manifest+json")], MANIFEST_JSON)
+    (
+        [(header::CONTENT_TYPE, "application/manifest+json")],
+        MANIFEST_JSON,
+    )
 }
 
 async fn serve_icon() -> impl IntoResponse {
@@ -106,29 +127,30 @@ async fn handle_ws(mut socket: WebSocket, state: PwaState) {
     info!("[PWA WS] client connected");
 
     // ── 認証フェーズ ──
+    #[allow(clippy::never_loop)]
     let authed = loop {
         match socket.recv().await {
-            Some(Ok(Message::Text(text))) => {
-                match serde_json::from_str::<ClientMsg>(&text) {
-                    Ok(ClientMsg::Auth { password }) if password == *state.password => {
-                        let ok = serde_json::to_string(&ServerMsg::AuthOk).unwrap();
-                        if socket.send(Message::Text(ok)).await.is_err() { return; }
-                        info!("[PWA WS] auth OK");
-                        break true;
+            Some(Ok(Message::Text(text))) => match serde_json::from_str::<ClientMsg>(&text) {
+                Ok(ClientMsg::Auth { password }) if password == *state.password => {
+                    let ok = serde_json::to_string(&ServerMsg::AuthOk).unwrap();
+                    if socket.send(Message::Text(ok)).await.is_err() {
+                        return;
                     }
-                    Ok(ClientMsg::Auth { .. }) => {
-                        let fail = serde_json::to_string(&ServerMsg::AuthFail).unwrap();
-                        let _ = socket.send(Message::Text(fail)).await;
-                        info!("[PWA WS] auth FAIL");
-                        break false;
-                    }
-                    _ => {
-                        let fail = serde_json::to_string(&ServerMsg::AuthFail).unwrap();
-                        let _ = socket.send(Message::Text(fail)).await;
-                        break false;
-                    }
+                    info!("[PWA WS] auth OK");
+                    break true;
                 }
-            }
+                Ok(ClientMsg::Auth { .. }) => {
+                    let fail = serde_json::to_string(&ServerMsg::AuthFail).unwrap();
+                    let _ = socket.send(Message::Text(fail)).await;
+                    info!("[PWA WS] auth FAIL");
+                    break false;
+                }
+                _ => {
+                    let fail = serde_json::to_string(&ServerMsg::AuthFail).unwrap();
+                    let _ = socket.send(Message::Text(fail)).await;
+                    break false;
+                }
+            },
             _ => break false,
         }
     };
@@ -143,9 +165,9 @@ async fn handle_ws(mut socket: WebSocket, state: PwaState) {
 
     // 定期プッシュタスク: stats (500ms), rig_state (2秒 = 4回ごと)
     let state_push = state.clone();
-    let tx_push    = tx.clone();
+    let tx_push = tx.clone();
     let push_task = tokio::spawn(async move {
-        let mut interval  = tokio::time::interval(tokio::time::Duration::from_millis(500));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(500));
         let mut rig_tick: u32 = 0;
         loop {
             interval.tick().await;
@@ -164,7 +186,7 @@ async fn handle_ws(mut socket: WebSocket, state: PwaState) {
 
             // rig_state は Lua 呼び出しを伴うため 2 秒ごとに push
             rig_tick += 1;
-            if rig_tick % 4 == 0 {
+            if rig_tick.is_multiple_of(4) {
                 let rig = {
                     let guard = state_push.server.lock().await;
                     guard.as_ref().map(|s| s.rigcontrol())
@@ -175,8 +197,8 @@ async fn handle_ws(mut socket: WebSocket, state: PwaState) {
                         let rig_json = serde_json::to_string(&ServerMsg::RigState {
                             freq_a: info.freq_a,
                             freq_b: info.freq_b,
-                            mode:   info.mode,
-                            power:  info.power,
+                            mode: info.mode,
+                            power: info.power,
                         })
                         .unwrap();
                         if tx_push.send(rig_json).await.is_err() {
@@ -235,7 +257,7 @@ async fn handle_ws(mut socket: WebSocket, state: PwaState) {
 /// クライアントメッセージを処理し、即時レスポンスが必要なら Some(json) を返す
 async fn process_client_msg(text: &str, state: &PwaState) -> Option<String> {
     let msg = match serde_json::from_str::<ClientMsg>(text) {
-        Ok(m)  => m,
+        Ok(m) => m,
         Err(_) => return None,
     };
 
@@ -265,8 +287,8 @@ async fn process_client_msg(text: &str, state: &PwaState) -> Option<String> {
                         let json = serde_json::to_string(&ServerMsg::RigState {
                             freq_a: info.freq_a,
                             freq_b: info.freq_b,
-                            mode:   info.mode,
-                            power:  info.power,
+                            mode: info.mode,
+                            power: info.power,
                         })
                         .ok();
                         // push 経由ではなく直接返す
@@ -340,12 +362,12 @@ fn execute_rig_cmd(
 
 pub async fn run_pwa_server(port: u16, state: PwaState) -> anyhow::Result<()> {
     let app = Router::new()
-        .route("/",              get(serve_index))
-        .route("/app.js",        get(serve_app_js))
-        .route("/styles.css",    get(serve_styles))
+        .route("/", get(serve_index))
+        .route("/app.js", get(serve_app_js))
+        .route("/styles.css", get(serve_styles))
         .route("/manifest.json", get(serve_manifest))
-        .route("/icon-192.png",  get(serve_icon))
-        .route("/ws",            get(ws_handler))
+        .route("/icon-192.png", get(serve_icon))
+        .route("/ws", get(ws_handler))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{}", port);

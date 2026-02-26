@@ -100,24 +100,32 @@ impl LuaUserData for LuaRigControl {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         // ctl:assert_key(bool)
         methods.add_method("assert_key", |_, this, level: bool| {
-            let mut port = this.keying_port.lock()
+            let mut port = this
+                .keying_port
+                .lock()
                 .map_err(|e| LuaError::RuntimeError(format!("keying port lock failed: {}", e)))?;
             if this.use_rts_for_keying {
-                port.write_request_to_send(level).map_err(LuaError::external)?;
+                port.write_request_to_send(level)
+                    .map_err(LuaError::external)?;
             } else {
-                port.write_data_terminal_ready(level).map_err(LuaError::external)?;
+                port.write_data_terminal_ready(level)
+                    .map_err(LuaError::external)?;
             }
             Ok(())
         });
 
         // ctl:assert_atu(bool)
         methods.add_method("assert_atu", |_, this, level: bool| {
-            let mut port = this.keying_port.lock()
+            let mut port = this
+                .keying_port
+                .lock()
                 .map_err(|e| LuaError::RuntimeError(format!("keying port lock failed: {}", e)))?;
             if !this.use_rts_for_keying {
-                port.write_request_to_send(level).map_err(LuaError::external)?;
+                port.write_request_to_send(level)
+                    .map_err(LuaError::external)?;
             } else {
-                port.write_data_terminal_ready(level).map_err(LuaError::external)?;
+                port.write_data_terminal_ready(level)
+                    .map_err(LuaError::external)?;
             }
             Ok(())
         });
@@ -129,7 +137,13 @@ fn hex_dump(data: &[u8]) -> String {
     let hex: Vec<String> = data.iter().map(|b| format!("{:02X}", b)).collect();
     let ascii: String = data
         .iter()
-        .map(|&b| if (0x20..=0x7E).contains(&b) { b as char } else { '.' })
+        .map(|&b| {
+            if (0x20..=0x7E).contains(&b) {
+                b as char
+            } else {
+                '.'
+            }
+        })
         .collect();
     format!("[{}] \"{}\"", hex.join(" "), ascii)
 }
@@ -138,11 +152,13 @@ impl LuaUserData for LuaSerialPort {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
         // port:write(data) -> bytes_written
         methods.add_method("write", |_, this, data: LuaString| {
-            let mut port = this.write_port.lock()
+            let mut port = this
+                .write_port
+                .lock()
                 .map_err(|e| LuaError::RuntimeError(format!("write port lock failed: {}", e)))?;
             let bytes = data.as_bytes();
-            info!("[serial TX] {} bytes: {}", bytes.len(), hex_dump(&*bytes));
-            port.write_all(&*bytes).map_err(|e| {
+            info!("[serial TX] {} bytes: {}", bytes.len(), hex_dump(&bytes));
+            port.write_all(&bytes).map_err(|e| {
                 info!("[serial TX ERROR] write_all: {}", e);
                 LuaError::external(e)
             })?;
@@ -157,83 +173,117 @@ impl LuaUserData for LuaSerialPort {
 
         // port:read(max_bytes, timeout_ms) -> string
         // BGバッファからmax_bytesまで読み取る
-        methods.add_method("read", |lua, this, (max_bytes, timeout_ms): (usize, u64)| {
-            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-            let mut result = Vec::new();
-            info!("[serial RX] read up to {} bytes, timeout={}ms", max_bytes, timeout_ms);
-            loop {
-                {
-                    let mut ring = this.buffer.lock()
-                        .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
-                    let available = ring.len().min(max_bytes - result.len());
-                    if available > 0 {
-                        result.extend(ring.drain(..available));
+        methods.add_method(
+            "read",
+            |lua, this, (max_bytes, timeout_ms): (usize, u64)| {
+                let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+                let mut result = Vec::new();
+                info!(
+                    "[serial RX] read up to {} bytes, timeout={}ms",
+                    max_bytes, timeout_ms
+                );
+                loop {
+                    {
+                        let mut ring = this.buffer.lock().map_err(|e| {
+                            LuaError::RuntimeError(format!("buffer lock failed: {}", e))
+                        })?;
+                        let available = ring.len().min(max_bytes - result.len());
+                        if available > 0 {
+                            result.extend(ring.drain(..available));
+                        }
+                    }
+                    if result.len() >= max_bytes || Instant::now() >= deadline {
+                        break;
+                    }
+                    if result.is_empty() {
+                        sleep(Duration::from_millis(1));
+                    } else {
+                        sleep(Duration::from_millis(5));
                     }
                 }
-                if result.len() >= max_bytes || Instant::now() >= deadline {
-                    break;
-                }
-                if result.is_empty() {
-                    sleep(Duration::from_millis(1));
-                } else {
-                    sleep(Duration::from_millis(5));
-                }
-            }
-            info!("[serial RX] total {} bytes: {}", result.len(), hex_dump(&result));
-            lua.create_string(&result)
-        });
+                info!(
+                    "[serial RX] total {} bytes: {}",
+                    result.len(),
+                    hex_dump(&result)
+                );
+                lua.create_string(&result)
+            },
+        );
 
         // port:read_until(delimiter, timeout_ms) -> string
         // BGバッファからdelimiterが見つかるまで読み取る
-        methods.add_method("read_until", |lua, this, (delimiter, timeout_ms): (LuaString, u64)| {
-            let delim = delimiter.as_bytes().to_vec();
-            if delim.is_empty() {
-                return Err(LuaError::RuntimeError("delimiter must not be empty".to_string()));
-            }
-            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-            let mut result = Vec::new();
-            info!("[serial RX] read_until delim={} timeout={}ms", hex_dump(&delim), timeout_ms);
-            loop {
-                {
-                    let mut ring = this.buffer.lock()
-                        .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
-                    while let Some(byte) = ring.pop_front() {
-                        result.push(byte);
-                        if result.len() >= delim.len()
-                            && result[result.len() - delim.len()..] == delim[..]
-                        {
-                            info!("[serial RX] read_until found delimiter, {} bytes: {}", result.len(), hex_dump(&result));
-                            return lua.create_string(&result);
+        methods.add_method(
+            "read_until",
+            |lua, this, (delimiter, timeout_ms): (LuaString, u64)| {
+                let delim = delimiter.as_bytes().to_vec();
+                if delim.is_empty() {
+                    return Err(LuaError::RuntimeError(
+                        "delimiter must not be empty".to_string(),
+                    ));
+                }
+                let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+                let mut result = Vec::new();
+                info!(
+                    "[serial RX] read_until delim={} timeout={}ms",
+                    hex_dump(&delim),
+                    timeout_ms
+                );
+                loop {
+                    {
+                        let mut ring = this.buffer.lock().map_err(|e| {
+                            LuaError::RuntimeError(format!("buffer lock failed: {}", e))
+                        })?;
+                        while let Some(byte) = ring.pop_front() {
+                            result.push(byte);
+                            if result.len() >= delim.len()
+                                && result[result.len() - delim.len()..] == delim[..]
+                            {
+                                info!(
+                                    "[serial RX] read_until found delimiter, {} bytes: {}",
+                                    result.len(),
+                                    hex_dump(&result)
+                                );
+                                return lua.create_string(&result);
+                            }
                         }
                     }
+                    if Instant::now() >= deadline {
+                        break;
+                    }
+                    sleep(Duration::from_millis(1));
                 }
-                if Instant::now() >= deadline {
-                    break;
-                }
-                sleep(Duration::from_millis(1));
-            }
-            info!("[serial RX] read_until timeout, {} bytes: {}", result.len(), hex_dump(&result));
-            lua.create_string(&result)
-        });
+                info!(
+                    "[serial RX] read_until timeout, {} bytes: {}",
+                    result.len(),
+                    hex_dump(&result)
+                );
+                lua.create_string(&result)
+            },
+        );
 
         // port:clear_input()
         // BGバッファとOSバッファの両方をクリアする
         methods.add_method("clear_input", |_, this, ()| {
             info!("[serial] clear_input");
             {
-                let mut ring = this.buffer.lock()
+                let mut ring = this
+                    .buffer
+                    .lock()
                     .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
                 ring.clear();
             }
             {
-                let port = this.write_port.lock()
-                    .map_err(|e| LuaError::RuntimeError(format!("write port lock failed: {}", e)))?;
+                let port = this.write_port.lock().map_err(|e| {
+                    LuaError::RuntimeError(format!("write port lock failed: {}", e))
+                })?;
                 let _ = port.clear(serialport::ClearBuffer::Input);
             }
             // BGスレッドが読み取り中のデータを待ってからもう一度クリア
             sleep(Duration::from_millis(10));
             {
-                let mut ring = this.buffer.lock()
+                let mut ring = this
+                    .buffer
+                    .lock()
                     .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
                 ring.clear();
             }
@@ -308,6 +358,7 @@ impl Mode {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Result<Self> {
         match s {
             "LSB" => Ok(Mode::Lsb),
@@ -359,10 +410,7 @@ pub fn find_script(script_name: &str) -> Result<PathBuf> {
         }
     }
 
-    bail!(
-        "Rig script '{}' not found in any search path",
-        script_name
-    )
+    bail!("Rig script '{}' not found in any search path", script_name)
 }
 
 /// スクリプトディレクトリのリストを返す（UI用）
@@ -426,13 +474,21 @@ impl RigControl {
         }
 
         // Luaスクリプトを読み込み、serial_configでリグコントロールポートを開く
-        let lua_state = match Self::init_lua(rig_script, rigcontrol_port, Some(&keying_port), use_rts_for_keying) {
+        let lua_state = match Self::init_lua(
+            rig_script,
+            rigcontrol_port,
+            Some(&keying_port),
+            use_rts_for_keying,
+        ) {
             Ok(state) => {
                 info!("Lua script '{}' loaded successfully", rig_script);
                 Some(Mutex::new(state))
             }
             Err(e) => {
-                warn!("Failed to load Lua script '{}': {} - running without rig control", rig_script, e);
+                warn!(
+                    "Failed to load Lua script '{}': {} - running without rig control",
+                    rig_script, e
+                );
                 None
             }
         };
@@ -512,7 +568,9 @@ impl RigControl {
 
         let baud: u32 = serial_config.get("baud").unwrap_or(4800);
         let stop_bits_val: u8 = serial_config.get("stop_bits").unwrap_or(2);
-        let parity_str: String = serial_config.get("parity").unwrap_or_else(|_| "none".to_string());
+        let parity_str: String = serial_config
+            .get("parity")
+            .unwrap_or_else(|_| "none".to_string());
         let timeout_ms: u64 = serial_config.get("timeout_ms").unwrap_or(100);
         info!(
             "[lua] serial_config: baud={}, stop_bits={}, parity={}, timeout_ms={}",
@@ -535,9 +593,7 @@ impl RigControl {
             .stop_bits(stop_bits)
             .parity(parity)
             .open()
-            .with_context(|| {
-                format!("failed to open port {} for rigcontrol.", rigcontrol_port)
-            })?;
+            .with_context(|| format!("failed to open port {} for rigcontrol.", rigcontrol_port))?;
 
         let (lua_port, reader_handle) = LuaSerialPort::new(port_box)?;
 
@@ -571,11 +627,17 @@ impl RigControl {
     pub fn get_rig_info(&self) -> RigInfo {
         let freq_a = self.get_freq(true).unwrap_or(0) as u64;
         let freq_b = self.get_freq(false).unwrap_or(0) as u64;
-        let mode = self.get_mode()
+        let mode = self
+            .get_mode()
             .map(|m| m.to_str().to_string())
             .unwrap_or_default();
         let power = self.get_power().unwrap_or(0) as u64;
-        RigInfo { freq_a, freq_b, mode, power }
+        RigInfo {
+            freq_a,
+            freq_b,
+            mode,
+            power,
+        }
     }
 
     /// Lua関数を呼び出すヘルパー（引数なし、戻り値T）
@@ -585,47 +647,47 @@ impl RigControl {
             info!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
-        let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
-        let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
+        let state = lua_state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state
+            .lua
+            .registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
-        let func: LuaFunction = rig_table.get(func_name)
-            .map_err(|e| {
-                info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
-                anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
-            })?;
-        let result: T = func.call(rig_table.clone())
-            .map_err(|e| {
-                info!("[lua call] FAIL: {}() error: {}", func_name, e);
-                anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
-            })?;
+        let func: LuaFunction = rig_table.get(func_name).map_err(|e| {
+            info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+            anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
+        })?;
+        let result: T = func.call(rig_table.clone()).map_err(|e| {
+            info!("[lua call] FAIL: {}() error: {}", func_name, e);
+            anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
+        })?;
         info!("[lua call] {}() OK", func_name);
         Ok(result)
     }
 
     /// Lua関数を呼び出すヘルパー（引数1つ、戻り値T）
-    fn call_lua_with<A: IntoLua, T: FromLua>(
-        &self,
-        func_name: &str,
-        arg: A,
-    ) -> Result<T> {
+    fn call_lua_with<A: IntoLua, T: FromLua>(&self, func_name: &str, arg: A) -> Result<T> {
         info!("[lua call] {}(arg)", func_name);
         let Some(ref lua_state) = self.lua_state else {
             info!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
-        let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
-        let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
+        let state = lua_state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state
+            .lua
+            .registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
-        let func: LuaFunction = rig_table.get(func_name)
-            .map_err(|e| {
-                info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
-                anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
-            })?;
-        let result: T = func.call((rig_table.clone(), arg))
-            .map_err(|e| {
-                info!("[lua call] FAIL: {}(arg) error: {}", func_name, e);
-                anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
-            })?;
+        let func: LuaFunction = rig_table.get(func_name).map_err(|e| {
+            info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+            anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
+        })?;
+        let result: T = func.call((rig_table.clone(), arg)).map_err(|e| {
+            info!("[lua call] FAIL: {}(arg) error: {}", func_name, e);
+            anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
+        })?;
         info!("[lua call] {}(arg) OK", func_name);
         Ok(result)
     }
@@ -642,19 +704,21 @@ impl RigControl {
             info!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
-        let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
-        let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
+        let state = lua_state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state
+            .lua
+            .registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
-        let func: LuaFunction = rig_table.get(func_name)
-            .map_err(|e| {
-                info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
-                anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
-            })?;
-        let result: T = func.call((rig_table.clone(), arg1, arg2))
-            .map_err(|e| {
-                info!("[lua call] FAIL: {}(arg1, arg2) error: {}", func_name, e);
-                anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
-            })?;
+        let func: LuaFunction = rig_table.get(func_name).map_err(|e| {
+            info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+            anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
+        })?;
+        let result: T = func.call((rig_table.clone(), arg1, arg2)).map_err(|e| {
+            info!("[lua call] FAIL: {}(arg1, arg2) error: {}", func_name, e);
+            anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
+        })?;
         info!("[lua call] {}(arg1, arg2) OK", func_name);
         Ok(result)
     }
@@ -663,7 +727,9 @@ impl RigControl {
 
     #[inline]
     pub fn assert_key(&self, level: bool) {
-        let Some(ref keying) = self.keying_port else { return };
+        let Some(ref keying) = self.keying_port else {
+            return;
+        };
         let mut port = keying.lock().unwrap();
         if self.use_rts_for_keying {
             let _ = port.write_request_to_send(level);
@@ -673,7 +739,9 @@ impl RigControl {
     }
 
     fn assert_atu(&self, level: bool) {
-        let Some(ref keying) = self.keying_port else { return };
+        let Some(ref keying) = self.keying_port else {
+            return;
+        };
         let mut port = keying.lock().unwrap();
         if !self.use_rts_for_keying {
             let _ = port.write_request_to_send(level);
@@ -812,7 +880,10 @@ impl RigControl {
             return Vec::new();
         };
         let mut result = Vec::new();
-        if let Ok(pairs) = actions.pairs::<String, LuaTable>().collect::<Result<Vec<_>, _>>() {
+        if let Ok(pairs) = actions
+            .pairs::<String, LuaTable>()
+            .collect::<Result<Vec<_>, _>>()
+        {
             for (name, action_table) in pairs {
                 let label: String = action_table.get("label").unwrap_or_else(|_| name.clone());
                 result.push((name, label));
@@ -845,18 +916,28 @@ impl RigControl {
         let Some(ref lua_state) = self.lua_state else {
             bail!("rig control not available (no Lua state)")
         };
-        let state = lua_state.lock().map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
-        let rig_table: LuaTable = state.lua.registry_value(&state.rig_script)
+        let state = lua_state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state
+            .lua
+            .registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
-        let actions: LuaTable = rig_table.get("actions")
+        let actions: LuaTable = rig_table
+            .get("actions")
             .map_err(|e| anyhow::anyhow!("Script has no 'actions' table: {}", e))?;
-        let action_table: LuaTable = actions.get(name)
+        let action_table: LuaTable = actions
+            .get(name)
             .map_err(|e| anyhow::anyhow!("Action '{}' not found: {}", name, e))?;
-        let func: LuaFunction = action_table.get("fn")
+        let func: LuaFunction = action_table
+            .get("fn")
             .map_err(|e| anyhow::anyhow!("Action '{}' has no 'fn': {}", name, e))?;
 
         // rig_control グローバルを取得して渡す
-        let rig_control: LuaValue = state.lua.globals().get("rig_control")
+        let rig_control: LuaValue = state
+            .lua
+            .globals()
+            .get("rig_control")
             .unwrap_or(LuaValue::Nil);
 
         func.call::<LuaValue>((rig_table.clone(), rig_control))
