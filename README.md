@@ -102,17 +102,17 @@ With `--features server`, the same `wifikey` crate runs as a standalone server. 
        │◄─ IP:port ────────────────────────────────────────── ┤
        │   → if found: direct KCP, Path B not needed          │
        │                          │                          │
-       │  [Path B: MQTT + STUN — LAN or WAN]                 │
+       │  [Path B: MQTT + STUN/IPv6 — LAN or WAN]            │
        ├──SUBSCRIBE───────────────►                          │
        │                          ◄───────────SUBSCRIBE──────┤
        │  ┌─────────────┐        │        ┌─────────────┐  │
-       │  │ STUN query   │        │        │ STUN query   │  │
-       │  │ → global IP  │        │        │ → global IP  │  │
+       │  │ IPv6 probe   │        │        │ IPv6 probe   │  │
+       │  │ or STUN(v4)  │        │        │ or STUN(v4)  │  │
        │  └─────────────┘        │        └─────────────┘  │
        │                          │                          │
-       ├──PUBLISH {local,stun}───►├──────────────────────────►│
+       ├──PUBLISH {local,stun,ipv6}►├─────────────────────────►│
        │                          │                          │
-       │◄─────────────────────────┤◄──PUBLISH {local,stun}───┤
+       │◄─────────────────────────┤◄─PUBLISH {local,stun,ipv6}┤
        │                          │                          │
        ╔══════════════════════════╧══════════════════════════╗
        ║  First path wins → KCP Session established            ║
@@ -122,7 +122,8 @@ With `--features server`, the same `wifikey` crate runs as a standalone server. 
 ## Features
 
 - **Remote Keying**: Real-time paddle operation transmission
-- **NAT Traversal**: Connection via MQTT + STUN
+- **NAT Traversal**: Connection via MQTT + STUN (IPv4) or direct hole-punching (IPv6)
+- **IPv6 Support**: Dual-stack IPv6/IPv4; IPv6 preferred when available (no NAT, lower latency)
 - **mDNS Discovery**: Zero-configuration LAN discovery (`_wifikey2._udp`)
 - **Same LAN Support**: Local IP priority for low latency
 - **Signaling Encryption**: ChaCha20-Poly1305 encrypted MQTT signaling
@@ -160,15 +161,15 @@ KCP Features:
 
 **Problem**: Home routers use NAT, preventing direct external connections. Port forwarding is complex, and impossible in double-NAT or CGN environments.
 
-**Solution**: STUN (Session Traversal Utilities for NAT) obtains global addresses, enabling UDP hole punching through NAT.
+**Solution**: STUN (Session Traversal Utilities for NAT) obtains global addresses, enabling UDP hole punching through NAT. When a global IPv6 address is available, STUN is skipped — IPv6 needs no NAT, only stateful-firewall hole-punching.
 
-Supported NAT Types:
+Supported NAT Types (IPv4):
 - **Full Cone NAT**: Fully supported
 - **Restricted Cone NAT**: Supported
 - **Port Restricted Cone NAT**: Supported
-- **Symmetric NAT**: Not supported (requires TURN)
+- **Symmetric NAT**: Not supported
 
-Most home routers and mobile carriers use Cone-type NAT, making STUN connections possible.
+Most home routers and mobile carriers use Cone-type NAT, making STUN connections possible. IPv6 environments bypass NAT entirely.
 
 #### Why MQTT?
 
@@ -214,9 +215,10 @@ This system uses an ICE-like connection establishment method.
 | Environment | Support |
 |-------------|---------|
 | Same LAN | ✓ Direct connection via local IP (mDNS) |
-| Home router (Cone NAT) | ✓ STUN hole punching |
-| Mobile carrier (most) | ✓ STUN hole punching |
-| Symmetric NAT | ✗ Not supported (requires TURN) |
+| IPv6 WAN | ✓ Direct hole-punching (no NAT, no STUN) |
+| Home router (Cone NAT) | ✓ STUN + UDP hole punching |
+| Mobile carrier (most) | ✓ STUN + UDP hole punching |
+| Symmetric NAT | ✗ Not supported |
 
 #### Same LAN Operation
 

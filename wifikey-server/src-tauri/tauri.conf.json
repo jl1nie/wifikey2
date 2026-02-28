@@ -29,7 +29,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "WiFiKey2",
+    "copyright": "Copyright © 2026 Minoru Tomobe",
+    "category": "Utility",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -39,16 +42,15 @@
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
-      }
-    },
-    "linux": {
-      "deb": {
-        "depends": []
+      },
+      "nsis": {
+        "displayLanguageSelector": false,
+        "languages": ["Japanese", "English"],
+        "installMode": "currentUser"
       }
     },
     "resources": {
-      "../scripts/*": "scripts/",
-      "../pwa/*": "pwa/"
+      "../scripts/*": "scripts/"
     }
   },
   "plugins": {}

@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::{DateTime, Local};
 use log::{info, warn};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
-use mqttstunclient::{MQTTStunClient, TurnConfig};
+use mqttstunclient::MQTTStunClient;
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::sync::atomic::Ordering;
@@ -22,14 +22,9 @@ pub struct WiFiKeyConfig {
     keying_port: String,
     use_rts_for_keying: bool,
     pub rig_script: String,
-    /// Optional TURN relay server address string (e.g. "turn.example.com:3478")
-    pub turn_server: Option<String>,
-    pub turn_username: Option<String>,
-    pub turn_password: Option<String>,
 }
 
 impl WiFiKeyConfig {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         server_name: String,
         server_password: String,
@@ -37,9 +32,6 @@ impl WiFiKeyConfig {
         keying_port: String,
         use_rts_for_keying: bool,
         rig_script: String,
-        turn_server: Option<String>,
-        turn_username: Option<String>,
-        turn_password: Option<String>,
     ) -> Self {
         Self {
             server_name,
@@ -48,9 +40,6 @@ impl WiFiKeyConfig {
             keying_port,
             use_rts_for_keying,
             rig_script,
-            turn_server,
-            turn_username,
-            turn_password,
         }
     }
 }
@@ -232,6 +221,8 @@ impl WifiKeyServer {
             // Start mDNS service advertisement for LAN discovery
             let lan_udp = UdpSocket::bind("0.0.0.0:0").unwrap();
             let lan_port = lan_udp.local_addr().unwrap().port();
+            // IPv6 LAN socket (同ポートでバインド、失敗しても続行)
+            let lan_udp6 = UdpSocket::bind(format!("[::]:{}",  lan_port)).ok();
             let mdns = ServiceDaemon::new().expect("Failed to create mDNS daemon");
             let hostname = format!("wifikey2-{}.local.", std::process::id());
             let svc = ServiceInfo::new(
@@ -265,7 +256,7 @@ impl WifiKeyServer {
                 let (tx, rx) =
                     mpsc::channel::<(Arc<WkSession>, std::net::SocketAddr, WkListener)>();
 
-                // LAN listener (mDNS-discoverable)
+                // LAN IPv4 listener (mDNS-discoverable)
                 let tx_lan = tx.clone();
                 let lan_udp_clone = lan_udp.try_clone().unwrap();
                 let quit_lan = quit_thread.clone();
@@ -275,18 +266,31 @@ impl WifiKeyServer {
                     }
                     let mut listener = WkListener::bind(lan_udp_clone).unwrap();
                     if let Ok((session, addr)) = listener.accept() {
-                        info!("LAN: accepted connection from {}", addr);
+                        info!("LAN IPv4: accepted connection from {}", addr);
                         let _ = tx_lan.send((session, addr, listener));
                     }
                 });
+
+                // LAN IPv6 listener
+                if let Some(udp6) = lan_udp6.as_ref().and_then(|s| s.try_clone().ok()) {
+                    let tx_lan6 = tx.clone();
+                    let quit_lan6 = quit_thread.clone();
+                    thread::spawn(move || {
+                        if quit_lan6.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let mut listener = WkListener::bind(udp6).unwrap();
+                        if let Ok((session, addr)) = listener.accept() {
+                            info!("LAN IPv6: accepted connection from {}", addr);
+                            let _ = tx_lan6.send((session, addr, listener));
+                        }
+                    });
+                }
 
                 // WAN listener (MQTT/STUN)
                 let tx_wan = tx.clone();
                 let server_name = config.server_name.clone();
                 let server_password = config.server_password.clone();
-                let turn_server = config.turn_server.clone();
-                let turn_username = config.turn_username.clone();
-                let turn_password = config.turn_password.clone();
                 let quit_wan = quit_thread.clone();
                 thread::spawn(move || {
                     if quit_wan.load(Ordering::Relaxed) {
@@ -295,20 +299,9 @@ impl WifiKeyServer {
                     let wan_udp = UdpSocket::bind("[::]:0")
                         .or_else(|_| UdpSocket::bind("0.0.0.0:0"))
                         .unwrap();
-                    let turn_config = if let (Some(sv), Some(u), Some(p)) =
-                        (turn_server, turn_username, turn_password)
-                    {
-                        sv.parse().ok().map(|server| TurnConfig {
-                            server,
-                            username: u,
-                            password: p,
-                        })
-                    } else {
-                        None
-                    };
                     let mut mqtt =
-                        MQTTStunClient::new(server_name, &server_password, None, None, turn_config);
-                    let mut conn_result = match mqtt.get_client_addr(&wan_udp) {
+                        MQTTStunClient::new(server_name, &server_password, None, None);
+                    let conn_result = match mqtt.get_client_addr(&wan_udp) {
                         Some(r) => r,
                         None => {
                             if let Ok(addr) = wan_udp.local_addr() {
@@ -318,15 +311,7 @@ impl WifiKeyServer {
                         }
                     };
                     info!("WAN: client address = {}", conn_result.peer_addr);
-                    let (_turn_proxy, listener_socket) = if let Some(mut proxy) =
-                        conn_result.turn_proxy.take()
-                    {
-                        let app_socket = proxy.take_app_socket().expect("app_socket already taken");
-                        (Some(proxy), app_socket)
-                    } else {
-                        (None, wan_udp)
-                    };
-                    let mut listener = WkListener::bind(listener_socket).unwrap();
+                    let mut listener = WkListener::bind(wan_udp).unwrap();
                     if let Ok((session, addr)) = listener.accept() {
                         info!("WAN: accepted connection from {}", addr);
                         let _ = tx_wan.send((session, addr, listener));
@@ -393,11 +378,6 @@ impl WifiKeyServer {
             active_session,
             handle: Some(handle),
         })
-    }
-
-    /// PWAサーバーがリグ制御を共有するためのゲッター
-    pub fn rigcontrol(&self) -> Arc<RigControl> {
-        self.rigcontrol.clone()
     }
 
     #[allow(dead_code)]

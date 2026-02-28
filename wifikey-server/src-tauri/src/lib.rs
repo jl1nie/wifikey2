@@ -3,7 +3,6 @@
 pub mod commands;
 pub mod config;
 pub mod keyer;
-pub mod pwa_server;
 pub mod rigcontrol;
 pub mod server;
 

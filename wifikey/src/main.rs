@@ -31,7 +31,7 @@ use smart_leds::{SmartLedsWrite, RGB8};
 #[cfg(feature = "board_m5atom")]
 use ws2812_esp32_rmt_driver::Ws2812Esp32Rmt;
 
-use std::net::UdpSocket;
+use std::net::{IpAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 
 #[cfg(not(feature = "server"))]
@@ -396,7 +396,20 @@ fn try_mdns_discovery(mdns: &mut EspMdns, server_name: &str) -> Option<SocketAdd
             r.instance_name, r.addr, r.port
         );
         if r.instance_name.as_deref() == Some(server_name) {
-            if let Some(addr) = r.addr.first() {
+            // IPv6グローバルアドレス優先（fe80:: link-localは除外）、なければIPv4
+            let best = r
+                .addr
+                .iter()
+                .find(|a| match a {
+                    IpAddr::V6(v6) => {
+                        !v6.is_loopback()
+                            && !v6.is_unspecified()
+                            && (v6.segments()[0] & 0xffc0) != 0xfe80
+                    }
+                    _ => false,
+                })
+                .or_else(|| r.addr.iter().find(|a| a.is_ipv4()));
+            if let Some(addr) = best {
                 let sock_addr = SocketAddr::new(*addr, r.port);
                 info!("mDNS: server matched at {sock_addr}");
                 return Some(sock_addr);
