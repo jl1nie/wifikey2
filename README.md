@@ -227,6 +227,15 @@ When ESP32 and PC are on the same LAN, local IP is prioritized:
 - Minimum latency keying
 - Works even without router hairpin NAT support
 
+#### Connection Priority & IPv4 Fallback
+
+The ESP32 client attempts server discovery in this order on each retry:
+
+1. **mDNS** — LAN multicast; resolves in ~5 s when on the same network
+2. **MQTT/STUN** — WAN signaling; both sides publish their best address (IPv6 if available via `esp_netif_get_ip6_global()`, otherwise IPv4 via STUN), and the best reachable address is selected
+
+IPv6 is preferred when a global IPv6 address is detected (NAT-free, lower latency). If an IPv6 connection fails at the authentication stage, the client automatically retries with IPv4 only, then resets to normal dual-stack behaviour upon success.
+
 ### Lua Rig Control Scripting
 
 Since **v0.3.0**, wifikey-server supports **Lua scripting** for generic rig control. Each transceiver manufacturer uses a different serial protocol (Yaesu CAT, ICOM CI-V, Kenwood, etc.), so the Lua layer provides a unified interface that abstracts the protocol differences. This allows any serial-controlled transceiver to be supported by simply writing a Lua script, without modifying the server source code.
@@ -797,7 +806,7 @@ wifikey2/
 | Crate | Version | Description |
 |-------|---------|-------------|
 | `wifikey` | 0.2.0 | ESP32 firmware (client; `--features server` for PC-less server mode) |
-| `wifikey-server` | 0.3.2 | Desktop GUI application (**Tauri 2.x**) |
+| `wifikey-server` | 0.3.3 | Desktop GUI application (**Tauri 2.x**) |
 | `wksocket` | 0.1.0 | KCP-based communication library |
 | `mqttstunclient` | 0.1.0 | MQTT + STUN client |
 

@@ -372,7 +372,7 @@ fn check_long_press<T: InputPin>(button: &PinDriver<T, Input>, duration_ms: u32)
 fn try_mdns_discovery(
     mdns: &mut EspMdns,
     server_name: &str,
-    wifi_manager: &WifiManager,
+    has_v6: bool,
 ) -> Option<SocketAddr> {
     let new_qr = || QueryResult {
         instance_name: None,
@@ -395,9 +395,6 @@ fn try_mdns_discovery(
         .unwrap_or(0);
     info!("mDNS: query returned {count} results");
 
-    // esp_netif_get_ip6_global() でグローバルIPv6を取得できたか確認
-    // (UDPソケットによる検出はESP32 lwIPでは動作しないためESP-IDF APIを使用)
-    let has_v6 = wifi_manager.has_global_ipv6();
     info!("mDNS: has_v6={has_v6}");
 
     // 全マッチ結果からアドレスを収集してから選択する
@@ -458,6 +455,8 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
     let mut pkt_count: usize = 0;
     let mut slot_count: usize = 0;
     let mut edge_count: usize = 0;
+    // v6接続が失敗した場合に次回のリトライでIPv4を強制するフラグ
+    let mut force_v4 = false;
 
     loop {
         // Check WiFi connectivity before attempting server discovery
@@ -475,12 +474,15 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
 
         // Discover server address via interleaved mDNS + MQTT/STUN
         // mDNS (LAN, fast) → STUN/MQTT (WAN, slower), repeat once
+        // force_v4が立っている場合はIPv6を使用しない（v6接続失敗後のフォールバック）
+        let effective_has_v6 = wifi_manager.has_global_ipv6() && !force_v4;
+        info!("Discovery: has_v6={effective_has_v6} (force_v4={force_v4})");
         let discovery_result: Option<(SocketAddr, Option<UdpSocket>)> = 'discovery: {
             for round in 0..2 {
                 // mDNS step (skip if tethering)
                 if !profile.tethering {
                     info!("Discovery round {round}: trying mDNS...");
-                    if let Some(addr) = try_mdns_discovery(mdns, &profile.server_name, wifi_manager) {
+                    if let Some(addr) = try_mdns_discovery(mdns, &profile.server_name, effective_has_v6) {
                         break 'discovery Some((addr, None));
                     }
                 }
@@ -502,7 +504,7 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                     None,
                 );
                 stun_client.sanity_check();
-                if let Some(addr) = stun_client.get_server_addr(&mqtt_udp) {
+                if let Some(addr) = stun_client.get_server_addr(&mqtt_udp, effective_has_v6) {
                     info!("MQTT/STUN: server found at {addr}");
                     break 'discovery Some((addr, Some(mqtt_udp)));
                 }
@@ -545,10 +547,16 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
         if let Err(e) = response(session.clone(), &profile.server_password) {
             let _ = session.close();
             info!("Auth. failed: {e:?}");
+            // v6で接続失敗した場合は次回はIPv4を強制する
+            if remote_addr.is_ipv6() && !force_v4 {
+                warn!("v6 auth failed; forcing v4 on next attempt");
+                force_v4 = true;
+            }
             sleep(5000);
             continue;
         };
         info!("Auth. Success");
+        force_v4 = false; // 接続成功したのでフラグをリセット
         let Ok(mut sender) = WkSender::new(session) else {
             error!("Failed to create sender");
             sleep(5000);
@@ -691,7 +699,8 @@ fn run_server_loop(
         );
 
         // Get and publish our address
-        if let Some(result) = stun_client.get_client_addr(&udp) {
+        let has_v6 = wifi_manager.has_global_ipv6();
+        if let Some(result) = stun_client.get_client_addr(&udp, has_v6) {
             info!("Published address: {}", result.peer_addr);
         } else if let Ok(addr) = udp.local_addr() {
             info!("Local address: {}", addr);

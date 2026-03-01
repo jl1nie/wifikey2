@@ -301,7 +301,8 @@ impl WifiKeyServer {
                         .unwrap();
                     let mut mqtt =
                         MQTTStunClient::new(server_name, &server_password, None, None);
-                    let conn_result = match mqtt.get_client_addr(&wan_udp) {
+                    let has_v6 = MQTTStunClient::try_get_routable_ipv6().is_some();
+                    let conn_result = match mqtt.get_client_addr(&wan_udp, has_v6) {
                         Some(r) => r,
                         None => {
                             if let Ok(addr) = wan_udp.local_addr() {
