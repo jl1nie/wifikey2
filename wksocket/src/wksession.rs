@@ -243,13 +243,9 @@ impl WkSession {
                 }
                 sleep(1);
                 if let Ok((n, src)) = client_udp.recv_from(buf) {
-                    if src != peer {
-                        continue;
-                    }
-
                     let pkt = &mut buf[..n];
                     if pkt.len() < kcp::KCP_OVERHEAD {
-                        info!("connect: packet too short {n} bytes received from {peer}");
+                        info!("connect: packet too short {n} bytes received from {src}");
                         continue;
                     }
                     let Ok(mut s) = client_socket.lock() else {
