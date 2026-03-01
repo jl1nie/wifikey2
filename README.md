@@ -122,8 +122,8 @@ With `--features server`, the same `wifikey` crate runs as a standalone server. 
 ## Features
 
 - **Remote Keying**: Real-time paddle operation transmission
-- **NAT Traversal**: Connection via MQTT + STUN (IPv4) or direct hole-punching (IPv6)
-- **IPv6 Support**: Dual-stack IPv6/IPv4; IPv6 preferred when available (no NAT, lower latency)
+- **NAT Traversal**: Connection via MQTT + STUN (IPv4) or direct connection (IPv6)
+- **Dual-Stack (IPv4/IPv6)**: Full dual-stack implementation; IPv6 preferred when available (no NAT, lower latency). Handles Windows privacy-extension addresses, SLAAC timing, and stateful-firewall hole-punching transparently.
 - **mDNS Discovery**: Zero-configuration LAN discovery (`_wifikey2._udp`)
 - **Same LAN Support**: Local IP priority for low latency
 - **Signaling Encryption**: ChaCha20-Poly1305 encrypted MQTT signaling
@@ -161,15 +161,16 @@ KCP Features:
 
 **Problem**: Home routers use NAT, preventing direct external connections. Port forwarding is complex, and impossible in double-NAT or CGN environments.
 
-**Solution**: STUN (Session Traversal Utilities for NAT) obtains global addresses, enabling UDP hole punching through NAT. When a global IPv6 address is available, STUN is skipped — IPv6 needs no NAT, only stateful-firewall hole-punching.
+**Solution**: STUN (Session Traversal Utilities for NAT) obtains global addresses, enabling UDP hole punching through NAT. When a global IPv6 address is available, STUN is skipped — IPv6 needs no NAT, only stateful-firewall hole-punching (both sides send probe packets simultaneously to open firewall state entries in each direction).
 
 Supported NAT Types (IPv4):
 - **Full Cone NAT**: Fully supported
 - **Restricted Cone NAT**: Supported
 - **Port Restricted Cone NAT**: Supported
-- **Symmetric NAT**: Not supported
+- **Symmetric NAT (client-side)**: Supported when the server is behind Full Cone / Restricted NAT — the client initiates, creating the correct mapping; the server responds from the same address
+- **Symmetric NAT (both sides)**: Not supported (TURN relay would be required)
 
-Most home routers and mobile carriers use Cone-type NAT, making STUN connections possible. IPv6 environments bypass NAT entirely.
+Most home routers and mobile carriers use Cone-type NAT. IPv6 environments bypass NAT entirely, and stateful-firewall traversal is handled by the hole-punching probe exchange.
 
 #### Why MQTT?
 
@@ -215,10 +216,14 @@ This system uses an ICE-like connection establishment method.
 | Environment | Support |
 |-------------|---------|
 | Same LAN | ✓ Direct connection via local IP (mDNS) |
-| IPv6 WAN | ✓ Direct hole-punching (no NAT, no STUN) |
+| IPv6 WAN | ✓ Direct + stateful-firewall hole-punching (no NAT, no STUN) |
 | Home router (Cone NAT) | ✓ STUN + UDP hole punching |
-| Mobile carrier (most) | ✓ STUN + UDP hole punching |
-| Symmetric NAT | ✗ Not supported |
+| Mobile carrier (IPv4 CGNAT) | ✓ STUN + UDP hole punching |
+| Mobile carrier (IPv6) | ✓ Direct IPv6 — no NAT, lower latency |
+| Symmetric NAT (client) + Full Cone (server) | ✓ Supported (client-initiated mapping) |
+| Symmetric NAT (both sides, IPv4 only) | ✗ Not supported |
+
+> **Japanese networks**: IPoE fiber (v6プラス / DS-Lite / MAP-E) and all major mobile carriers (docomo / au / SoftBank) provide global IPv6, so the IPv6 path covers almost all practical scenarios.
 
 #### Same LAN Operation
 
@@ -806,7 +811,7 @@ wifikey2/
 | Crate | Version | Description |
 |-------|---------|-------------|
 | `wifikey` | 0.2.0 | ESP32 firmware (client; `--features server` for PC-less server mode) |
-| `wifikey-server` | 0.3.3 | Desktop GUI application (**Tauri 2.x**) |
+| `wifikey-server` | 0.3.4 | Desktop GUI application (**Tauri 2.x**) |
 | `wksocket` | 0.1.0 | KCP-based communication library |
 | `mqttstunclient` | 0.1.0 | MQTT + STUN client |
 
