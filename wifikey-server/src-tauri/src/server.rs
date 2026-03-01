@@ -5,8 +5,9 @@ use chrono::{DateTime, Local};
 use log::{info, warn};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
 use mqttstunclient::MQTTStunClient;
+use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::Ordering;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize},
@@ -221,8 +222,16 @@ impl WifiKeyServer {
             // Start mDNS service advertisement for LAN discovery
             let lan_udp = UdpSocket::bind("0.0.0.0:0").unwrap();
             let lan_port = lan_udp.local_addr().unwrap().port();
-            // IPv6 LAN socket (同ポートでバインド、失敗しても続行)
-            let lan_udp6 = UdpSocket::bind(format!("[::]:{}",  lan_port)).ok();
+            // IPv6 LAN socket: IPV6_V6ONLY=true を設定してから同ポートでバインド
+            // WindowsではデフォルトIPV6_V6ONLY=false(デュアルスタック)のため、
+            // IPv4ソケットと同ポートをバインドしようとするとアドレス競合でエラーになる。
+            let lan_udp6 = (|| -> Option<UdpSocket> {
+                let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).ok()?;
+                sock.set_only_v6(true).ok()?;
+                let addr: SocketAddr = format!("[::]:{}",  lan_port).parse().ok()?;
+                sock.bind(&addr.into()).ok()?;
+                Some(UdpSocket::from(sock))
+            })();
             let mdns = ServiceDaemon::new().expect("Failed to create mDNS daemon");
             let hostname = format!("wifikey2-{}.local.", std::process::id());
             let svc = ServiceInfo::new(

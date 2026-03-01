@@ -51,6 +51,9 @@ toml = "0.8"
 # mDNS
 mdns-sd = "0.11"
 
+# Socket options (IPV6_V6ONLY etc.)
+socket2 = "0.5"
+
 # Lua scripting
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
 
