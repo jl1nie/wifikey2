@@ -8,7 +8,7 @@ use std::sync::{
     Arc,
 };
 use std::thread;
-use wksocket::{sleep, tick_count, MessageRCV, WkReceiver};
+use wksocket::{sleep, tick_count, MessageRCV, MessageSND, WkReceiver, WkSender, WkSession};
 
 pub const MAX_ASSERT_DURATION: u32 = 10000;
 pub const MSPERWPM: u32 = 1200; /* PARIS = 50 tick */
@@ -173,7 +173,24 @@ impl RemoteKeyer {
         self.stop.load(Ordering::Relaxed)
     }
 
-    pub fn run(&self, rx_port: WkReceiver) {
+    pub fn run(&self, rx_port: WkReceiver, session: Arc<WkSession>) {
+        // Create sender for outgoing packets (Ping)
+        let sender = Arc::new(WkSender::new(session).unwrap());
+
+        // Spawn ping thread: sends Ping every 5 seconds to measure RTT
+        let sender_ping = sender.clone();
+        let stopfl_ping = self.stop.clone();
+        thread::spawn(move || loop {
+            sleep(5000);
+            if stopfl_ping.load(Ordering::Relaxed) {
+                break;
+            }
+            let ts = tick_count();
+            if sender_ping.send(MessageSND::Ping(ts)).is_err() {
+                break;
+            }
+        });
+
         let mut rmt_epoch = 0u32;
         let mut epoch = 0u32;
         let asserted = Arc::new(AtomicU32::new(0u32));
@@ -181,7 +198,8 @@ impl RemoteKeyer {
         let mut pkt = 0usize;
         let mut duration_max = 1usize;
         let mut last_sync_local = 0u32;
-        let mut rtt_estimate = 0usize;
+        let mut last_transit = 0i64; // 前回の transit = now_server - rmt_esp32
+        let mut jitter_x16 = 0i64;  // 固定小数点 1/16 ms 単位（精度維持）
 
         let rigcon_wdg = self.rigcontrol.clone();
         let rigcon = self.rigcontrol.clone();
@@ -204,35 +222,31 @@ impl RemoteKeyer {
                             if rmt - rmt_epoch > 3000 {
                                 let now = tick_count();
 
-                                // Estimate RTT from sync interval timing
-                                // The remote sends Sync every ~3000ms, so deviation indicates network delay
+                                // 一方向遅延変動（ジッター）の計測
+                                // transit = now_server - rmt_esp32 = OWD + clock_offset
+                                // 連続する transit の差を取るとクロックオフセットが消え OWD 変化量 = ジッター が残る
+                                let transit = now as i64 - rmt as i64;
                                 if last_sync_local > 0 {
-                                    let local_interval = now - last_sync_local;
-                                    let remote_interval = rmt - rmt_epoch;
-                                    // RTT estimate: difference between local and remote intervals
-                                    // This captures one-way delay variation
-                                    let diff = if local_interval > remote_interval {
-                                        (local_interval - remote_interval) as usize
-                                    } else {
-                                        (remote_interval - local_interval) as usize
-                                    };
-                                    // Use exponential moving average for smoothing
-                                    rtt_estimate = (rtt_estimate * 7 + diff) / 8;
+                                    let d = (transit - last_transit).unsigned_abs() as i64;
+                                    // RFC 3550 スタイルの EMA: J += (|D| - J) / 16
+                                    // 1/16 ms 単位で精度を維持し、最後に /16 して ms に変換
+                                    jitter_x16 += d * 16 - jitter_x16 / 16;
                                 }
+                                last_transit = transit;
                                 last_sync_local = now;
 
                                 rmt_epoch = rmt;
                                 epoch = now;
+                                let jitter_ms = (jitter_x16 / 16).unsigned_abs() as usize;
                                 info!(
-                                    "Sync rmt={} local={} rtt~{}ms",
-                                    rmt_epoch, epoch, rtt_estimate
+                                    "Sync rmt={} local={} jitter~{}ms",
+                                    rmt_epoch, epoch, jitter_ms
                                 );
                                 if duration_max == 0 {
                                     stat.set_stats(0, pkt / 3);
                                 } else {
                                     stat.set_stats(1000 / duration_max * 36, pkt / 3);
                                 };
-                                stat.set_rtt(rtt_estimate);
                                 duration_max = 0;
                                 pkt = 0;
                                 stat.set_session_active(true);
@@ -246,6 +260,11 @@ impl RemoteKeyer {
                             };
                             stat.set_atu_start(false);
                             break;
+                        }
+                        MessageRCV::Pong(ts) => {
+                            let rtt = tick_count().wrapping_sub(ts);
+                            stat.set_rtt(rtt as usize);
+                            trace!("Pong RTT={}ms", rtt);
                         }
                         m => {
                             let mut tm = 0u32;

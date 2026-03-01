@@ -14,6 +14,8 @@ pub const MAX_SLOTS: usize = 128;
 pub enum PacketKind {
     KeyerMessage,
     StartATU,
+    Ping,
+    Pong,
 }
 #[derive(PartialEq)]
 pub enum MessageSND {
@@ -22,6 +24,8 @@ pub enum MessageSND {
     NegEdge(u8),
     CloseSession,
     StartATU,
+    Ping(u32),
+    Pong(u32),
 }
 
 pub struct WkSender {
@@ -80,6 +84,34 @@ impl WkSender {
                     }
                     MessageSND::PosEdge(s) => slots.push(0x80u8 | s),
                     MessageSND::NegEdge(s) => slots.push(s),
+                    MessageSND::Ping(ts) => {
+                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::Ping, ts, &[]) {
+                            log::error!("encode error: {e}");
+                            continue;
+                        }
+                        if let Ok(n) = session.send(&buf) {
+                            trace!("Ping {n} bytes sent ts={ts}");
+                        } else {
+                            trace!("session closed by peer");
+                            let _ = session.close();
+                            closed.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                    MessageSND::Pong(ts) => {
+                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::Pong, ts, &[]) {
+                            log::error!("encode error: {e}");
+                            continue;
+                        }
+                        if let Ok(n) = session.send(&buf) {
+                            trace!("Pong {n} bytes sent ts={ts}");
+                        } else {
+                            trace!("session closed by peer");
+                            let _ = session.close();
+                            closed.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
                 }
             }
             if closed.load(Ordering::Relaxed) {
@@ -104,7 +136,7 @@ impl WkSender {
         Ok(())
     }
 
-    pub fn send(&mut self, msg: MessageSND) -> Result<()> {
+    pub fn send(&self, msg: MessageSND) -> Result<()> {
         if !self.session_closed.load(Ordering::Relaxed) {
             self.tx
                 .send(msg)
@@ -122,6 +154,8 @@ pub enum MessageRCV {
     Keyup(u32),
     SessionClosed,
     StartATU,
+    Ping(u32),
+    Pong(u32),
 }
 
 pub struct WkReceiver {
@@ -205,6 +239,10 @@ impl WkReceiver {
 
         if cmd == PacketKind::StartATU as u8 {
             slots.push(MessageRCV::StartATU)
+        } else if cmd == PacketKind::Ping as u8 {
+            slots.push(MessageRCV::Ping(tm))
+        } else if cmd == PacketKind::Pong as u8 {
+            slots.push(MessageRCV::Pong(tm))
         } else if len == 0 {
             trace!("Sync {tm}");
             slots.push(MessageRCV::Sync(tm))

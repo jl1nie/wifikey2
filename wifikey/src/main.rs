@@ -47,7 +47,7 @@ use mqttstunclient::MQTTStunClient;
 #[cfg(feature = "server")]
 use wksocket::{challenge, WkListener, WkReceiver};
 #[cfg(not(feature = "server"))]
-use wksocket::{response, tick_count, MessageSND, WkSender, WkSession, MAX_SLOTS};
+use wksocket::{response, tick_count, MessageRCV, MessageSND, WkReceiver, WkSender, WkSession, MAX_SLOTS};
 use wksocket::{sleep, MDNS_PROTO, MDNS_SERVICE_NAME};
 
 #[cfg(feature = "server")]
@@ -560,11 +560,33 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
         };
         info!("Auth. Success");
         force_v4 = false; // 接続成功したのでフラグをリセット
-        let Ok(mut sender) = WkSender::new(session) else {
+        let Ok(sender) = WkSender::new(session.clone()) else {
             error!("Failed to create sender");
             sleep(5000);
             continue;
         };
+        let sender = Arc::new(sender);
+        let Ok(receiver) = WkReceiver::new(session) else {
+            error!("Failed to create receiver");
+            sleep(5000);
+            continue;
+        };
+        // Pong responder: echo Ping packets back to server for RTT measurement
+        let sender_pong = sender.clone();
+        std::thread::Builder::new()
+            .stack_size(4096)
+            .spawn(move || loop {
+                if let Ok(msgs) = receiver.recv() {
+                    for m in msgs {
+                        if let MessageRCV::Ping(ts) = m {
+                            let _ = sender_pong.send(MessageSND::Pong(ts));
+                        }
+                    }
+                } else {
+                    break;
+                }
+            })
+            .unwrap();
 
         // Reset timestamps after discovery/connect/auth to avoid stale values
         let mut last_sent: u32 = tick_count();

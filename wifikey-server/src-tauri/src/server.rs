@@ -305,9 +305,10 @@ impl WifiKeyServer {
                     if quit_wan.load(Ordering::Relaxed) {
                         return;
                     }
-                    let wan_udp = UdpSocket::bind("[::]:0")
-                        .or_else(|_| UdpSocket::bind("0.0.0.0:0"))
-                        .unwrap();
+                    // IPv4でバインド: WindowsのUdpSocket::bind("[::]:0")はIPV6_V6ONLY=trueに
+                    // なるためSTUN(IPv4)が失敗する。IPv4ソケットを使うことで確実にSTUNが動く。
+                    // IPv6クライアントにはtry_get_routable_ipv6()で取得したアドレスを通知する。
+                    let wan_udp = UdpSocket::bind("0.0.0.0:0").unwrap();
                     let mut mqtt =
                         MQTTStunClient::new(server_name, &server_password, None, None);
                     let has_v6 = MQTTStunClient::try_get_routable_ipv6().is_some();
@@ -366,10 +367,10 @@ impl WifiKeyServer {
                     let mut guard = active_session_clone.lock().unwrap();
                     *guard = Some(session.clone());
                 }
-                let mesg = WkReceiver::new(session).unwrap();
+                let mesg = WkReceiver::new(session.clone()).unwrap();
                 stat.set_peer(&addr.to_string());
                 let remote = RemoteKeyer::new(stat.clone(), rig.clone());
-                remote.run(mesg);
+                remote.run(mesg, session);
                 {
                     let mut guard = active_session_clone.lock().unwrap();
                     *guard = None;
