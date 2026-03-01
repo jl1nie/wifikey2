@@ -372,7 +372,8 @@ fn check_long_press<T: InputPin>(button: &PinDriver<T, Input>, duration_ms: u32)
 fn try_mdns_discovery(
     mdns: &mut EspMdns,
     server_name: &str,
-    has_v6: bool,
+    wifi_manager: &wifi::WifiManager,
+    force_v4: bool,
 ) -> Option<SocketAddr> {
     let new_qr = || QueryResult {
         instance_name: None,
@@ -395,7 +396,9 @@ fn try_mdns_discovery(
         .unwrap_or(0);
     info!("mDNS: query returned {count} results");
 
-    info!("mDNS: has_v6={has_v6}");
+    // クエリ完了後（SLAACが5秒間で完了している可能性が高い）にIPv6可否を判定
+    let has_v6 = wifi_manager.has_global_ipv6() && !force_v4;
+    info!("mDNS: has_v6={has_v6} (force_v4={force_v4})");
 
     // 全マッチ結果からアドレスを収集してから選択する
     let mut port = 0u16;
@@ -474,21 +477,21 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
 
         // Discover server address via interleaved mDNS + MQTT/STUN
         // mDNS (LAN, fast) → STUN/MQTT (WAN, slower), repeat once
-        // force_v4が立っている場合はIPv6を使用しない（v6接続失敗後のフォールバック）
-        let effective_has_v6 = wifi_manager.has_global_ipv6() && !force_v4;
-        info!("Discovery: has_v6={effective_has_v6} (force_v4={force_v4})");
+        info!("Discovery: force_v4={force_v4}");
         let discovery_result: Option<(SocketAddr, Option<UdpSocket>)> = 'discovery: {
             for round in 0..2 {
                 // mDNS step (skip if tethering)
+                // has_v6はmDNSクエリ完了後（SLAAC完了のタイミングと合わせるため）に判定
                 if !profile.tethering {
                     info!("Discovery round {round}: trying mDNS...");
-                    if let Some(addr) = try_mdns_discovery(mdns, &profile.server_name, effective_has_v6) {
+                    if let Some(addr) = try_mdns_discovery(mdns, &profile.server_name, wifi_manager, force_v4) {
                         break 'discovery Some((addr, None));
                     }
                 }
 
-                // STUN/MQTT step
-                info!("Discovery round {round}: trying STUN/MQTT...");
+                // STUN/MQTT step (has_v6はここで判定 — mDNSより後だがSTUN前に十分)
+                let effective_has_v6 = wifi_manager.has_global_ipv6() && !force_v4;
+                info!("Discovery round {round}: trying STUN/MQTT (has_v6={effective_has_v6})...");
                 let mqtt_udp =
                     match UdpSocket::bind("[::]:0").or_else(|_| UdpSocket::bind("0.0.0.0:0")) {
                         Ok(s) => s,
