@@ -174,8 +174,8 @@ fn main() -> Result<()> {
     // Check for long press (5 seconds) to enter AP mode
     let enter_ap_mode = check_long_press(&button, LONG_PRESS_MS);
 
-    // Load profiles
-    let profiles = config_manager.lock().unwrap().load_profiles();
+    // Load profiles (NVS が空なら cfg.toml のビルド時デフォルトを使用)
+    let profiles = config_manager.lock().unwrap().load_profiles_or_default();
     let has_profiles = !profiles.is_empty();
 
     // Create WiFi manager once (modem ownership moves here)
@@ -369,7 +369,11 @@ fn check_long_press<T: InputPin>(button: &PinDriver<T, Input>, duration_ms: u32)
 /// Try mDNS discovery with a 5-second timeout
 /// Returns the server's socket address if found
 #[cfg(not(feature = "server"))]
-fn try_mdns_discovery(mdns: &mut EspMdns, server_name: &str) -> Option<SocketAddr> {
+fn try_mdns_discovery(
+    mdns: &mut EspMdns,
+    server_name: &str,
+    wifi_manager: &WifiManager,
+) -> Option<SocketAddr> {
     let new_qr = || QueryResult {
         instance_name: None,
         hostname: None,
@@ -390,31 +394,47 @@ fn try_mdns_discovery(mdns: &mut EspMdns, server_name: &str) -> Option<SocketAdd
         )
         .unwrap_or(0);
     info!("mDNS: query returned {count} results");
+
+    // esp_netif_get_ip6_global() でグローバルIPv6を取得できたか確認
+    // (UDPソケットによる検出はESP32 lwIPでは動作しないためESP-IDF APIを使用)
+    let has_v6 = wifi_manager.has_global_ipv6();
+    info!("mDNS: has_v6={has_v6}");
+
+    // 全マッチ結果からアドレスを収集してから選択する
+    let mut port = 0u16;
+    let mut best_v6: Option<IpAddr> = None;
+    let mut best_v4: Option<IpAddr> = None;
     for r in &results[..count] {
         info!(
             "mDNS: found '{:?}' addr={:?} port={}",
             r.instance_name, r.addr, r.port
         );
         if r.instance_name.as_deref() == Some(server_name) {
-            // IPv6グローバルアドレス優先（fe80:: link-localは除外）、なければIPv4
-            let best = r
-                .addr
-                .iter()
-                .find(|a| match a {
-                    IpAddr::V6(v6) => {
-                        !v6.is_loopback()
+            port = r.port;
+            for a in &r.addr {
+                match a {
+                    IpAddr::V6(v6)
+                        if best_v6.is_none()
+                            && !v6.is_loopback()
                             && !v6.is_unspecified()
-                            && (v6.segments()[0] & 0xffc0) != 0xfe80
+                            && (v6.segments()[0] & 0xffc0) != 0xfe80 =>
+                    {
+                        best_v6 = Some(*a);
                     }
-                    _ => false,
-                })
-                .or_else(|| r.addr.iter().find(|a| a.is_ipv4()));
-            if let Some(addr) = best {
-                let sock_addr = SocketAddr::new(*addr, r.port);
-                info!("mDNS: server matched at {sock_addr}");
-                return Some(sock_addr);
+                    IpAddr::V4(_) if best_v4.is_none() => {
+                        best_v4 = Some(*a);
+                    }
+                    _ => {}
+                }
             }
         }
+    }
+    // IPv6は自分もIPv6ルートを持つ場合のみ優先
+    let best = if has_v6 { best_v6.or(best_v4) } else { best_v4.or(best_v6) };
+    if let Some(addr) = best {
+        let sock_addr = SocketAddr::new(addr, port);
+        info!("mDNS: server matched at {sock_addr}");
+        return Some(sock_addr);
     }
     info!("mDNS: server '{server_name}' not found");
     None
@@ -460,7 +480,7 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                 // mDNS step (skip if tethering)
                 if !profile.tethering {
                     info!("Discovery round {round}: trying mDNS...");
-                    if let Some(addr) = try_mdns_discovery(mdns, &profile.server_name) {
+                    if let Some(addr) = try_mdns_discovery(mdns, &profile.server_name, wifi_manager) {
                         break 'discovery Some((addr, None));
                     }
                 }
@@ -497,6 +517,8 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
         };
 
         info!("Remote Server = {remote_addr}");
+        // STUN経由: IPv4/IPv6ともにパンチ済みソケットを再利用（ファイアウォール開通ポートと一致させる）
+        // mDNS経由(None): ESP32 lwIPは[::]をデュアルスタックとして扱わないためアドレスファミリに合わせてバインド
         let udp = match punched_udp {
             Some(udp) => {
                 info!(
@@ -506,8 +528,8 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                 udp
             }
             None => {
-                let Ok(udp) = UdpSocket::bind("[::]:0").or_else(|_| UdpSocket::bind("0.0.0.0:0"))
-                else {
+                let bind_addr = if remote_addr.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+                let Ok(udp) = UdpSocket::bind(bind_addr) else {
                     error!("Failed to bind UDP socket");
                     sleep(5000);
                     continue;

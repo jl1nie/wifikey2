@@ -6,6 +6,13 @@ use anyhow::{anyhow, Result};
 use esp_idf_svc::nvs::{EspNvs, EspNvsPartition, NvsDefault};
 use log::{info, warn};
 
+/// Build-time defaults from cfg.toml (set by build.rs via cargo:rustc-env)
+const CFG_WIFI_SSID: &str = env!("CFG_WIFI_SSID");
+const CFG_WIFI_PASSWORD: &str = env!("CFG_WIFI_PASSWORD");
+const CFG_SERVER_NAME: &str = env!("CFG_SERVER_NAME");
+const CFG_SERVER_PASSWORD: &str = env!("CFG_SERVER_PASSWORD");
+const CFG_TETHERING: &str = env!("CFG_TETHERING"); // "true" or "false"
+
 /// Maximum number of profiles that can be stored
 pub const MAX_PROFILES: usize = 8;
 
@@ -259,6 +266,30 @@ impl ConfigManager {
     /// Get the number of stored profiles
     pub fn profile_count(&self) -> usize {
         self.nvs.get_u8(Self::COUNT_KEY).ok().flatten().unwrap_or(0) as usize
+    }
+
+    /// Load profiles from NVS; if empty, fall back to build-time cfg.toml defaults
+    pub fn load_profiles_or_default(&self) -> Vec<WifiProfile> {
+        let profiles = self.load_profiles();
+        if !profiles.is_empty() {
+            return profiles;
+        }
+        // NVS is empty — use build-time defaults from cfg.toml
+        if CFG_WIFI_SSID.is_empty() || CFG_SERVER_NAME.is_empty() {
+            info!("No profiles in NVS and cfg.toml defaults not set");
+            return Vec::new();
+        }
+        info!(
+            "No profiles in NVS, using cfg.toml defaults: ssid={}, server={}",
+            CFG_WIFI_SSID, CFG_SERVER_NAME
+        );
+        vec![WifiProfile {
+            ssid: CFG_WIFI_SSID.to_string(),
+            password: CFG_WIFI_PASSWORD.to_string(),
+            server_name: CFG_SERVER_NAME.to_string(),
+            server_password: CFG_SERVER_PASSWORD.to_string(),
+            tethering: CFG_TETHERING == "true",
+        }]
     }
 
     /// Load all profiles from NVS

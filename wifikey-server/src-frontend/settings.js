@@ -16,7 +16,6 @@ const rigcontrolPortSelect = document.getElementById('rigcontrol-port');
 const keyingPortSelect = document.getElementById('keying-port');
 const useRtsCheckbox = document.getElementById('use-rts');
 const rigScriptSelect = document.getElementById('rig-script');
-const pwaPortInput = document.getElementById('pwa-port');
 
 // State
 let currentConfig = null;
@@ -71,7 +70,6 @@ function populateForm(config, ports, scripts) {
     populatePortSelect(rigcontrolPortSelect, ports, config.rigcontrol_port);
     populatePortSelect(keyingPortSelect, ports, config.keying_port);
     populateScriptSelect(scripts, config.rig_script);
-    if (pwaPortInput) pwaPortInput.value = config.pwa_port || 8765;
 }
 
 function populateScriptSelect(scripts, currentValue) {
@@ -131,7 +129,6 @@ async function saveSettings() {
             keying_port: keyingPortSelect.value,
             use_rts_for_keying: useRtsCheckbox.checked,
             rig_script: rigScriptSelect.value,
-            pwa_port: parseInt(pwaPortInput ? pwaPortInput.value : '8765', 10) || 8765,
         };
         settingsSave.disabled = true;
         settingsSave.textContent = 'Saving...';

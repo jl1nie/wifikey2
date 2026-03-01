@@ -178,6 +178,12 @@ description = "Run wifikey-server (release)"
 command = "cargo"
 args = ["run", "--release", "-p", "wifikey-server"]
 
+[tasks.installer]
+description = "Build NSIS installer (wifikey-server)"
+command = "npm"
+args = ["run", "tauri:build"]
+cwd = "wifikey-server"
+
 # ============================================================
 # Combined Tasks
 # ============================================================

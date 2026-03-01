@@ -492,6 +492,26 @@ wifikey-serverアプリからESP32をUSB接続で設定できます。
 5. プロファイルを追加・削除
 6. 「Restart ESP32」で反映
 
+#### 方法4: ビルド時設定 (wifikey/cfg.toml)
+
+ソースからビルドする場合、WiFi認証情報をコンパイル時にファームウェアへ書き込むことができます。これにより、初回起動時のAPモード設定が不要になります。
+
+1. `wifikey/cfg.toml` を作成 (このファイルは .gitignore に登録済み):
+
+   ```toml
+   [wifikey]
+   wifi_ssid = "YourWiFiSSID"
+   wifi_password = "YourWiFiPassword"
+   server_name = "JA1XXX/keyer1"
+   server_password = "YourServerPassword"
+   tethering = false
+   ```
+
+2. `flash.ps1` でビルド・フラッシュ — APモードやNVS書き込み不要
+3. 後からWeb設定やATコマンドでNVSプロファイルを保存した場合、そちらが優先されます
+
+> **注意**: `wifikey/cfg.toml` はESP32**クライアント**ファームウェアのビルド時デフォルト設定です。ルートの `cfg.toml` は**wifikey-server** (PC) の実行時設定です。
+
 #### 方法3: シリアルターミナルからATコマンド
 
 シリアルターミナル (115200bps) から直接ATコマンドで設定できます。
@@ -820,7 +840,7 @@ wifikey2/
 | クレート | バージョン | 説明 |
 |----------|-----------|------|
 | `wifikey` | 0.2.0 | ESP32ファームウェア (クライアント・サーバー共用; `--features server` でサーバーモード) |
-| `wifikey-server` | 0.3.1 | デスクトップGUIアプリ (**Tauri 2.x**) |
+| `wifikey-server` | 0.3.2 | デスクトップGUIアプリ (**Tauri 2.x**) |
 | `wksocket` | 0.1.0 | KCPベースの通信ライブラリ |
 | `mqttstunclient` | 0.1.0 | MQTT + STUNクライアント |
 
@@ -839,7 +859,11 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
-ビルド成果物: `src-tauri/target/release/wifikey-server.exe`
+ビルド成果物:
+- 実行ファイル: `target/release/wifikey-server.exe`
+- NSISインストーラー: `target/release/bundle/nsis/WiFiKey2_<バージョン>_x64-setup.exe`
+
+NSISインストーラーは日本語・英語に対応し、管理者権限不要のユーザーインストールです。
 
 Tauriアプリ全体をビルドせずにコンパイルチェックだけ行うこともできます:
 

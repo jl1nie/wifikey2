@@ -81,7 +81,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <input type="text" id="server" required maxlength="64" placeholder="CALLSIGN/keyer">
 
                 <label>Server Password</label>
-                <input type="password" id="serverpass" maxlength="64">
+                <input type="password" id="serverpass" maxlength="64" value="keyer_passwd">
 
                 <label style="display:flex;align-items:center;gap:8px;margin:8px 0;color:#eee;cursor:pointer">
                     <input type="checkbox" id="tethering" style="width:auto;margin:0">
@@ -384,7 +384,7 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 <input type="text" id="server" required maxlength="64" placeholder="CALLSIGN/keyer">
 
                 <label>Connection Password (Clients use this to connect)</label>
-                <input type="password" id="serverpass" maxlength="64">
+                <input type="password" id="serverpass" maxlength="64" value="keyer_passwd">
 
                 <button type="submit" class="btn-primary">Add Profile</button>
             </form>

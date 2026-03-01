@@ -443,6 +443,26 @@ Configure ESP32 via USB from wifikey-server app.
 5. Add/delete profiles
 6. "Restart ESP32" to apply
 
+#### Method 4: Build-time Defaults via wifikey/cfg.toml
+
+For developers building from source, WiFi credentials can be baked into the firmware at compile time. This eliminates the need for AP mode setup on first boot.
+
+1. Create `wifikey/cfg.toml` (this file is gitignored):
+
+   ```toml
+   [wifikey]
+   wifi_ssid = "YourWiFiSSID"
+   wifi_password = "YourWiFiPassword"
+   server_name = "JA1XXX/keyer1"
+   server_password = "YourServerPassword"
+   tethering = false
+   ```
+
+2. Build and flash with `flash.ps1` — no AP mode or NVS writing needed
+3. If NVS profiles are saved later (via Web UI or AT commands), they take priority over these defaults
+
+> **Note**: `wifikey/cfg.toml` is for the ESP32 **client** firmware build defaults. The root `cfg.toml` is the runtime config for **wifikey-server** (PC).
+
 #### Method 3: AT Commands via Serial Terminal
 
 Direct AT commands via serial terminal (115200bps).
@@ -777,7 +797,7 @@ wifikey2/
 | Crate | Version | Description |
 |-------|---------|-------------|
 | `wifikey` | 0.2.0 | ESP32 firmware (client; `--features server` for PC-less server mode) |
-| `wifikey-server` | 0.3.1 | Desktop GUI application (**Tauri 2.x**) |
+| `wifikey-server` | 0.3.2 | Desktop GUI application (**Tauri 2.x**) |
 | `wksocket` | 0.1.0 | KCP-based communication library |
 | `mqttstunclient` | 0.1.0 | MQTT + STUN client |
 
@@ -796,7 +816,11 @@ npm run tauri:dev
 npm run tauri:build
 ```
 
-Build output: `src-tauri/target/release/wifikey-server.exe`
+Build output:
+- Executable: `target/release/wifikey-server.exe`
+- NSIS Installer: `target/release/bundle/nsis/WiFiKey2_<version>_x64-setup.exe`
+
+The NSIS installer supports Japanese and English and installs per-user (no admin required).
 
 You can also check compilation without building the full Tauri app:
 

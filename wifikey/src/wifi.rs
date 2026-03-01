@@ -13,6 +13,8 @@ use esp_idf_svc::{
         EspWifi,
     },
 };
+use esp_idf_svc::handle::RawHandle;
+use esp_idf_sys::{esp_netif_create_ip6_linklocal, esp_netif_get_ip6_global};
 use log::info;
 #[cfg(not(feature = "server"))]
 use log::warn;
@@ -118,7 +120,13 @@ impl<'a> WifiManager<'a> {
 
         self.wifi.wait_netif_up()?;
         let ip_info = self.wifi.wifi().sta_netif().get_ip_info()?;
-        info!("Got IP: {:?}", ip_info.ip);
+        info!("Got IPv4: {:?}", ip_info.ip);
+
+        // IPv6 SLAAC を有効化（モバイル回線等でグローバルIPv6を取得）
+        // 待機しない。discovery のタイムアウト中に自然と完了する。
+        unsafe {
+            esp_netif_create_ip6_linklocal(self.wifi.wifi().sta_netif().handle());
+        }
 
         Ok(profile.clone())
     }
@@ -201,6 +209,15 @@ impl<'a> WifiManager<'a> {
         let _ = self.wifi.disconnect();
         FreeRtos::delay_ms(3000); // Wait for AP to clear association (comeback time ≈ 1s)
         self.connect_with_profiles(profiles)
+    }
+
+    /// Check if a global (non-link-local) IPv6 address has been obtained via SLAAC
+    pub fn has_global_ipv6(&self) -> bool {
+        let mut addr = unsafe { std::mem::zeroed::<esp_idf_sys::esp_ip6_addr_t>() };
+        let ret = unsafe {
+            esp_netif_get_ip6_global(self.wifi.wifi().sta_netif().handle(), &mut addr)
+        };
+        ret == esp_idf_sys::ESP_OK
     }
 
     /// Check if WiFi is started

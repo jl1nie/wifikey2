@@ -328,6 +328,14 @@ impl WkSession {
     pub fn closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
     }
+
+    pub fn conv(&self) -> Result<u32> {
+        let mut socket = self
+            .socket
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
+        Ok(socket.conv())
+    }
 }
 
 pub struct WkListener {
@@ -372,8 +380,20 @@ impl WkListener {
 
                             let mut conv = kcp::get_conv(pkt);
                             if conv == 0 {
-                                conv = rand::random();
-                                trace!("set new conv ={conv}");
+                                // If an active session already exists from this peer, reuse its
+                                // conv. This handles KCP retransmissions of the initial SYN
+                                // packet (which still carry conv=0) that arrive before the server
+                                // has had a chance to send a response.
+                                let reuse_conv =
+                                    sessions.as_ref().and_then(|(session, current_peer)| {
+                                        if !session.closed() && *current_peer == peer {
+                                            session.conv().ok()
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                conv = reuse_conv.unwrap_or_else(rand::random);
+                                trace!("set conv ={conv}");
                                 kcp::set_conv(pkt, conv);
                             }
 

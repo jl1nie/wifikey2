@@ -29,7 +29,6 @@ esp-idf-hal = "0.45.2"
 log = { version = "0.4", default-features = false }
 smart-leds = "0.4"
 ws2812-esp32-rmt-driver = { version = "0.12.0", features = ["smart-leds-trait"] }
-toml-cfg = "0.2"
 wksocket = { path = "../wksocket" }
 mqttstunclient = { path = "../mqttstunclient", default-features = false, features = ["esp-idf-mqtt"] }
 
