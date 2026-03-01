@@ -122,6 +122,9 @@ foreach ($line in ($cfgContent -split "`n")) {
     if ($inSection -and $line -match '^(\w+)\s*=\s*(\d+)$') {
         $nvsValues[$Matches[1]] = $Matches[2]
     }
+    if ($inSection -and $line -match '^(\w+)\s*=\s*(true|false)$') {
+        $nvsValues[$Matches[1]] = $Matches[2]
+    }
 }
 
 if ($nvsValues.Count -eq 0) {
@@ -130,28 +133,32 @@ if ($nvsValues.Count -eq 0) {
 }
 
 # Encode WiFi profile as binary blob matching ConfigManager::WifiProfile::to_bytes()
-# Format: [ssid_len][ssid][pass_len][pass][sname_len][sname][spass_len][spass]
-function Encode-WifiProfile($ssid, $password, $serverName, $serverPassword) {
+# Format: [ssid_len][ssid][pass_len][pass][sname_len][sname][spass_len][spass][flags]
+# flags: bit0 = tethering
+function Encode-WifiProfile($ssid, $password, $serverName, $serverPassword, $tethering) {
     $buf = [System.Collections.Generic.List[byte]]::new()
     foreach ($s in @($ssid, $password, $serverName, $serverPassword)) {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($s)
         $buf.Add([byte]$bytes.Length)
         $buf.AddRange($bytes)
     }
+    $flags = if ($tethering -eq "true") { [byte]0x01 } else { [byte]0x00 }
+    $buf.Add($flags)
     return [Convert]::ToBase64String($buf.ToArray())
 }
 
-$ssid   = $nvsValues["wifi_ssid"]
-$passwd = $nvsValues["wifi_passwd"]
-$sname  = $nvsValues["server_name"]
-$spass  = $nvsValues["server_password"]
+$ssid      = $nvsValues["wifi_ssid"]
+$passwd    = $nvsValues["wifi_password"]
+$sname     = $nvsValues["server_name"]
+$spass     = $nvsValues["server_password"]
+$tethering = if ($nvsValues.ContainsKey("tethering")) { $nvsValues["tethering"] } else { "false" }
 
 if (-not $ssid -or -not $sname) {
     Write-Host "[ERROR] wifi_ssid and server_name are required in cfg.toml" -ForegroundColor Red
     exit 1
 }
 
-$profileBlob = Encode-WifiProfile $ssid $passwd $sname $spass
+$profileBlob = Encode-WifiProfile $ssid $passwd $sname $spass $tethering
 
 # Write NVS CSV (ConfigManager format: count + prof0 blob)
 $csvLines = @(
@@ -185,7 +192,7 @@ Write-Host "[OK] Firmware flashed (no reset)." -ForegroundColor Green
 
 # Write NVS partition at offset 0x9000 (chip is still in bootloader)
 Write-Host "--- Writing NVS partition ---" -ForegroundColor Cyan
-& espflash write-bin -b no-reset @portArgs 0x9000 $nvsBin
+& espflash write-bin -a no-reset @portArgs 0x9000 $nvsBin
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] NVS partition write failed." -ForegroundColor Red
     exit 1

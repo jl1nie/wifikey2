@@ -1,5 +1,7 @@
 [wifikey]
 wifi_ssid = "SSID"
-wifi_passwd = "PASSWD"
+wifi_password = "PASSWD"
 server_name = "your_callsign/keyer_name"
 server_password = "PASSWD"
+# テザリング接続時はtrue（mDNSをスキップしてMQTT/STUNのみ使用）
+tethering = false

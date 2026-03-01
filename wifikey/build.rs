@@ -1,5 +1,8 @@
 fn main() {
-    println!("cargo:rerun-if-changed=cfg.toml");
+    // cfg.toml はリポジトリルート（wifikey/ の一つ上）に置く
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default();
+    let cfg_path = std::path::Path::new(&manifest_dir).join("../cfg.toml");
+    println!("cargo:rerun-if-changed={}", cfg_path.display());
 
     // Emit defaults first (overwritten below if cfg.toml is present)
     println!("cargo:rustc-env=CFG_WIFI_SSID=");
@@ -8,7 +11,7 @@ fn main() {
     println!("cargo:rustc-env=CFG_SERVER_PASSWORD=keyer_passwd");
     println!("cargo:rustc-env=CFG_TETHERING=false");
 
-    if let Ok(content) = std::fs::read_to_string("cfg.toml") {
+    if let Ok(content) = std::fs::read_to_string(&cfg_path) {
         let mut in_section = false;
         for line in content.lines() {
             let line = line.trim();
