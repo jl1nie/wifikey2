@@ -429,8 +429,10 @@ fn try_mdns_discovery(
             }
         }
     }
-    // IPv6は自分もIPv6ルートを持つ場合のみ優先
-    let best = if has_v6 { best_v6.or(best_v4) } else { best_v4.or(best_v6) };
+    // mDNS (LAN) は常にIPv4優先: LAN IPv6はWindows Firewall等で失敗しやすく
+    // IPv6優先はWAN (STUN) 経由の接続にのみ意味がある
+    let _ = has_v6; // ログ用に残す
+    let best = best_v4.or(best_v6);
     if let Some(addr) = best {
         let sock_addr = SocketAddr::new(addr, port);
         info!("mDNS: server matched at {sock_addr}");

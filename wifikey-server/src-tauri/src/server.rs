@@ -232,6 +232,9 @@ impl WifiKeyServer {
                 sock.bind(&addr.into()).ok()?;
                 Some(UdpSocket::from(sock))
             })();
+            if lan_udp6.is_none() {
+                warn!("IPv6 LAN socket unavailable on port {} — IPv6 clients will not connect", lan_port);
+            }
             let mdns = ServiceDaemon::new().expect("Failed to create mDNS daemon");
             let hostname = format!("wifikey2-{}.local.", std::process::id());
             let svc = ServiceInfo::new(
