@@ -167,7 +167,7 @@ $csvLines = @(
     "count,data,u8,1"
     "prof0,data,base64,$profileBlob"
 )
-$csvLines -join "`n" | Set-Content -NoNewline -Path $nvsCsv -Encoding UTF8
+[System.IO.File]::WriteAllText($nvsCsv, ($csvLines -join "`n"), [System.Text.UTF8Encoding]::new($false))
 Write-Host "  Profile: ssid=$ssid server=$sname"
 Write-Host "  NVS CSV written to $nvsCsv"
 

@@ -220,21 +220,18 @@ impl WifiKeyServer {
 
         let handle = thread::spawn(move || {
             // Start mDNS service advertisement for LAN discovery
-            let lan_udp = UdpSocket::bind("0.0.0.0:0").unwrap();
-            let lan_port = lan_udp.local_addr().unwrap().port();
-            // IPv6 LAN socket: IPV6_V6ONLY=true を設定してから同ポートでバインド
-            // WindowsではデフォルトIPV6_V6ONLY=false(デュアルスタック)のため、
-            // IPv4ソケットと同ポートをバインドしようとするとアドレス競合でエラーになる。
-            let lan_udp6 = (|| -> Option<UdpSocket> {
+            // デュアルスタックソケット: set_only_v6(false) でIPv4(::ffff:x.x.x.x)とIPv6を1つのソケットで受信
+            let lan_udp = (|| -> Option<UdpSocket> {
                 let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).ok()?;
-                sock.set_only_v6(true).ok()?;
-                let addr: SocketAddr = format!("[::]:{}",  lan_port).parse().ok()?;
+                sock.set_only_v6(false).ok()?;
+                let addr: SocketAddr = "[::]:0".parse().ok()?;
                 sock.bind(&addr.into()).ok()?;
                 Some(UdpSocket::from(sock))
-            })();
-            if lan_udp6.is_none() {
-                warn!("IPv6 LAN socket unavailable on port {} — IPv6 clients will not connect", lan_port);
-            }
+            })().unwrap_or_else(|| {
+                warn!("Dual-stack socket unavailable, falling back to IPv4-only");
+                UdpSocket::bind("0.0.0.0:0").unwrap()
+            });
+            let lan_port = lan_udp.local_addr().unwrap().port();
             let mdns = ServiceDaemon::new().expect("Failed to create mDNS daemon");
             let hostname = format!("wifikey2-{}.local.", std::process::id());
             let svc = ServiceInfo::new(
@@ -268,7 +265,7 @@ impl WifiKeyServer {
                 let (tx, rx) =
                     mpsc::channel::<(Arc<WkSession>, std::net::SocketAddr, WkListener)>();
 
-                // LAN IPv4 listener (mDNS-discoverable)
+                // LAN listener (dual-stack: IPv4 and IPv6 via single socket)
                 let tx_lan = tx.clone();
                 let lan_udp_clone = lan_udp.try_clone().unwrap();
                 let quit_lan = quit_thread.clone();
@@ -278,26 +275,10 @@ impl WifiKeyServer {
                     }
                     let mut listener = WkListener::bind(lan_udp_clone).unwrap();
                     if let Ok((session, addr)) = listener.accept() {
-                        info!("LAN IPv4: accepted connection from {}", addr);
+                        info!("LAN: accepted connection from {}", addr);
                         let _ = tx_lan.send((session, addr, listener));
                     }
                 });
-
-                // LAN IPv6 listener
-                if let Some(udp6) = lan_udp6.as_ref().and_then(|s| s.try_clone().ok()) {
-                    let tx_lan6 = tx.clone();
-                    let quit_lan6 = quit_thread.clone();
-                    thread::spawn(move || {
-                        if quit_lan6.load(Ordering::Relaxed) {
-                            return;
-                        }
-                        let mut listener = WkListener::bind(udp6).unwrap();
-                        if let Ok((session, addr)) = listener.accept() {
-                            info!("LAN IPv6: accepted connection from {}", addr);
-                            let _ = tx_lan6.send((session, addr, listener));
-                        }
-                    });
-                }
 
                 // WAN listener (MQTT/STUN)
                 let tx_wan = tx.clone();
