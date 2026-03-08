@@ -1,8 +1,8 @@
 # flash.ps1 - Build and flash wifikey2 ESP32 firmware
-# Usage: .\flash.ps1 [-Board m5atom|esp32_wrover] [-Port COM3] [-Release] [-MonitorOnly] [-Server]
+# Usage: .\flash.ps1 [-Board m5atom|m5atom_lite|esp32_wrover] [-Port COM3] [-Release] [-MonitorOnly] [-Server]
 
 param(
-    [ValidateSet("m5atom", "esp32_wrover")]
+    [ValidateSet("m5atom", "m5atom_lite", "esp32_wrover")]
     [string]$Board = "m5atom",
 
     [string]$Port = "",
@@ -57,6 +57,8 @@ if ($MonitorOnly) {
 # Select features based on board
 $boardFeature = if ($Board -eq "esp32_wrover") {
     "board_esp32_wrover"
+} elseif ($Board -eq "m5atom_lite") {
+    "board_m5atom"  # M5ATOM Lite: same GPIO layout as M5ATOM (GPIO27=LED, GPIO39=BTN)
 } else {
     "board_m5atom"
 }
