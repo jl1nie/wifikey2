@@ -37,9 +37,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(feature = "server"))]
 use std::net::SocketAddr;
 #[cfg(not(feature = "server"))]
-use std::sync::atomic::Ordering;
-#[cfg(not(feature = "server"))]
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::LevelFilter;
 use log::{error, info, warn};
@@ -61,13 +59,20 @@ use wifi::WifiManager;
 
 // Client-only timing constants
 #[cfg(not(feature = "server"))]
-const STABLE_PERIOD: i32 = 1;
-#[cfg(not(feature = "server"))]
 const SLEEP_PERIOD: usize = 148_000; // Doze after empty packets sent
 #[cfg(not(feature = "server"))]
 const PKT_INTERVAL: usize = 50; // Send keying packet every 50ms
 #[cfg(not(feature = "server"))]
 const KEEP_ALIVE: u32 = 3_000; // Send Keep Alive Packet every 3sec
+
+// GPIO interrupt flag (client only) — ISRでエッジを即時捕捉してポーリングを補完する
+#[cfg(not(feature = "server"))]
+static KEY_EDGE_FLAG: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(feature = "server"))]
+fn gpio_key_callback() {
+    KEY_EDGE_FLAG.store(true, Ordering::Relaxed);
+}
 
 // Button long press duration for AP mode (in ms)
 const LONG_PRESS_MS: u32 = 5000;
@@ -75,19 +80,6 @@ const LONG_PRESS_MS: u32 = 5000;
 // AP mode password (change before building if desired, must be 8+ chars)
 const AP_PASSWORD: &str = "wifikey2";
 
-// GPIO interrupt state (client only)
-#[cfg(not(feature = "server"))]
-static TRIGGER: AtomicBool = AtomicBool::new(false);
-#[cfg(not(feature = "server"))]
-static TICKCOUNT: AtomicU32 = AtomicU32::new(0);
-
-#[cfg(not(feature = "server"))]
-fn gpio_key_callback() {
-    use esp_idf_sys::xTaskGetTickCountFromISR;
-    TRIGGER.store(true, Ordering::Relaxed);
-    let now: u32 = unsafe { xTaskGetTickCountFromISR() };
-    TICKCOUNT.store(now, Ordering::Relaxed);
-}
 
 /// Create AnyIOPin from pin number
 ///
@@ -140,6 +132,10 @@ fn main() -> Result<()> {
     let red_color = std::iter::repeat(RGB8 { r: 5, g: 0, b: 0 }).take(1);
     #[cfg(all(feature = "board_m5atom", not(feature = "server")))]
     let blue_color = std::iter::repeat(RGB8 { r: 0, g: 0, b: 5 }).take(1);
+    #[cfg(all(feature = "board_m5atom", not(feature = "server")))]
+    let yellow_color = std::iter::repeat(RGB8 { r: 4, g: 2, b: 0 }).take(1);
+    #[cfg(all(feature = "board_m5atom", not(feature = "server")))]
+    let white_color = std::iter::repeat(RGB8 { r: 5, g: 5, b: 5 }).take(1);
     #[cfg(all(feature = "board_m5atom", feature = "server"))]
     let empty_color = std::iter::repeat(RGB8::default()).take(1);
     #[cfg(all(feature = "board_m5atom", feature = "server"))]
@@ -166,7 +162,7 @@ fn main() -> Result<()> {
     // Initialize button using dynamic GPIO
     let button_pin = unsafe { pin_from_num(gpio_config.button as i32) };
     let mut button = PinDriver::input(button_pin)?;
-    button.set_pull(Pull::Up).unwrap();
+    button.set_pull(Pull::Up).ok(); // GPIO39はプルアップ非対応のため失敗しても続行
     // Rebind as immutable after setup; client code borrows it as &PinDriver
     #[cfg(not(feature = "server"))]
     let button = button;
@@ -326,6 +322,7 @@ fn main() -> Result<()> {
         info!("mDNS initialized");
 
         // Initialize keyer input using dynamic GPIO
+        // ISR(AnyEdge)+ポーリングの二重検出: ISRで即時捕捉 + ポーリングでISR取りこぼし補完
         let key_pin = unsafe { pin_from_num(gpio_config.key_gpio as i32) };
         let mut keyinput = PinDriver::input(key_pin)?;
         keyinput.set_pull(Pull::Up).unwrap();
@@ -347,6 +344,10 @@ fn main() -> Result<()> {
             &empty_color,
             #[cfg(feature = "board_m5atom")]
             &red_color,
+            #[cfg(feature = "board_m5atom")]
+            &yellow_color,
+            #[cfg(feature = "board_m5atom")]
+            &white_color,
             #[cfg(not(feature = "board_m5atom"))]
             &mut led,
         )
@@ -455,18 +456,26 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
     #[cfg(feature = "board_m5atom")] led: &mut Ws2812Esp32Rmt,
     #[cfg(feature = "board_m5atom")] empty_color: &std::iter::Take<std::iter::Repeat<RGB8>>,
     #[cfg(feature = "board_m5atom")] red_color: &std::iter::Take<std::iter::Repeat<RGB8>>,
+    #[cfg(feature = "board_m5atom")] yellow_color: &std::iter::Take<std::iter::Repeat<RGB8>>,
+    #[cfg(feature = "board_m5atom")] white_color: &std::iter::Take<std::iter::Repeat<RGB8>>,
     #[cfg(not(feature = "board_m5atom"))] led: &mut PinDriver<'_, impl OutputPin, Output>,
 ) -> Result<()> {
-    let mut pkt_count: usize = 0;
     let mut slot_count: usize = 0;
-    let mut edge_count: usize = 0;
     // v6接続が失敗した場合に次回のリトライでIPv4を強制するフラグ
     let mut force_v4 = false;
+    // WiFi 再接続中に使う青色（ローカル定数）
+    #[cfg(feature = "board_m5atom")]
+    let blue_color = std::iter::repeat(RGB8 { r: 0, g: 0, b: 5 }).take(1);
 
     loop {
         // Check WiFi connectivity before attempting server discovery
         if !wifi_manager.is_connected() {
             warn!("WiFi disconnected! Reconnecting...");
+            // WiFi 切断: 青で再接続中を示す
+            #[cfg(feature = "board_m5atom")]
+            led.write(blue_color.clone()).unwrap();
+            #[cfg(not(feature = "board_m5atom"))]
+            led.set_low().ok();
             match wifi_manager.reconnect(profiles) {
                 Ok(p) => info!("WiFi reconnected to {}", p.ssid),
                 Err(e) => {
@@ -479,6 +488,11 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
 
         // Discover server address via interleaved mDNS + MQTT/STUN
         // mDNS (LAN, fast) → STUN/MQTT (WAN, slower), repeat once
+        // サーバ探索中: 黄色で探索中を示す
+        #[cfg(feature = "board_m5atom")]
+        led.write(yellow_color.clone()).unwrap();
+        #[cfg(not(feature = "board_m5atom"))]
+        led.set_low().ok();
         info!("Discovery: force_v4={force_v4}");
         let discovery_result: Option<(SocketAddr, Option<UdpSocket>)> = 'discovery: {
             for round in 0..2 {
@@ -562,6 +576,11 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
         };
         info!("Auth. Success");
         force_v4 = false; // 接続成功したのでフラグをリセット
+        // 認証完了・待機: 消灯（接続後は邪魔しない）
+        #[cfg(feature = "board_m5atom")]
+        led.write(empty_color.clone()).unwrap();
+        #[cfg(not(feature = "board_m5atom"))]
+        led.set_low().ok();
         let Ok(sender) = WkSender::new(session.clone()) else {
             error!("Failed to create sender");
             sleep(5000);
@@ -595,6 +614,10 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
         let mut last_stat: u32 = last_sent;
         let mut dozing = false;
         let mut sleep_count = 0;
+        // ポーリングによるエッジ検出
+        let mut last_key_high = keyinput.is_high();
+        // GPIO39ボタンデバウンス用カウンタ
+        let mut button_low_count: u32 = 0;
 
         loop {
             sleep(1);
@@ -606,10 +629,6 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                     break;
                 }
                 last_stat = now;
-                use log::trace;
-                trace!("[{last_stat}] PKT={pkt_count} EDGE={edge_count}");
-                edge_count = 0;
-                pkt_count = 0;
                 // Check WiFi during doze keep-alive
                 if !wifi_manager.is_connected() {
                     warn!("WiFi lost during doze. Reconnecting...");
@@ -618,7 +637,6 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
             }
 
             if !dozing && now - last_sent >= PKT_INTERVAL as u32 {
-                pkt_count += 1;
                 if sender.send(MessageSND::SendPacket(last_sent)).is_err() {
                     info!("Connection closed by peer");
                     break;
@@ -628,39 +646,50 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                     if sleep_count > SLEEP_PERIOD {
                         sleep_count = 0;
                         dozing = true;
-                        info!("No activity. Dozing...");
                     }
                 }
                 last_sent = now;
                 slot_count = 0;
             }
 
+            // ボタンデバウンス: 100ms連続LOWで発動（GPIO39はプルアップ非対応でフローティング誤検出対策）
+            // ATU発動後はbutton_low_count=101にセットし、一度でもHIGHにならないと再発動しない
             if button.is_low() {
-                info!("Start ATU");
-                #[cfg(feature = "board_m5atom")]
-                led.write(red_color.clone()).unwrap();
-                #[cfg(not(feature = "board_m5atom"))]
-                led.set_high().unwrap();
+                button_low_count += 1;
+                if button_low_count == 100 {
+                    info!("Start ATU");
+                    #[cfg(feature = "board_m5atom")]
+                    led.write(red_color.clone()).unwrap();
+                    #[cfg(not(feature = "board_m5atom"))]
+                    led.set_high().unwrap();
 
-                sender.send(MessageSND::StartATU).unwrap();
-                sleep(500);
+                    sender.send(MessageSND::StartATU).unwrap();
+                    sleep(500);
 
-                #[cfg(feature = "board_m5atom")]
-                led.write(empty_color.clone()).unwrap();
-                #[cfg(not(feature = "board_m5atom"))]
-                led.set_low().unwrap();
+                    #[cfg(feature = "board_m5atom")]
+                    led.write(empty_color.clone()).unwrap();
+                    #[cfg(not(feature = "board_m5atom"))]
+                    led.set_low().unwrap();
 
-                dozing = false;
+                    dozing = false;
+                    button_low_count = 101; // ボタン解放まで再発動防止
+                }
+            } else {
+                button_low_count = 0;
             }
 
-            if TRIGGER.load(Ordering::Relaxed)
-                && now as i32 - TICKCOUNT.load(Ordering::Relaxed) as i32 > STABLE_PERIOD
-            {
-                TRIGGER.store(false, Ordering::Relaxed);
+            // ISRが発火した場合は再アーム（ISR自体はAtomic flagセットのみ）
+            if KEY_EDGE_FLAG.load(Ordering::Relaxed) {
+                KEY_EDGE_FLAG.store(false, Ordering::Relaxed);
                 keyinput.enable_interrupt().unwrap();
+            }
+
+            // ポーリング+ISRの二重検出: ISRで即時捕捉、ポーリングで補完
+            let current_high = keyinput.is_high();
+            if current_high != last_key_high {
+                last_key_high = current_high;
 
                 if dozing {
-                    info!("Wake up.");
                     dozing = false;
                     last_sent = now;
                     sender.send(MessageSND::SendPacket(last_sent)).unwrap();
@@ -672,21 +701,21 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                     error!("Overflow interval={slot_pos} slots={slot_count}");
                     last_sent = now;
                     slot_count = 0;
-                } else if keyinput.is_high() {
+                } else if current_high {
+                    // キー OFF: 消灯
                     #[cfg(feature = "board_m5atom")]
                     led.write(empty_color.clone()).unwrap();
                     #[cfg(not(feature = "board_m5atom"))]
                     led.set_low().unwrap();
                     sender.send(MessageSND::PosEdge(slot_pos as u8)).unwrap();
                     slot_count += 1;
-                    edge_count += 1;
                 } else {
+                    // キー ON: 白く点灯
                     #[cfg(feature = "board_m5atom")]
-                    led.write(red_color.clone()).unwrap();
+                    led.write(white_color.clone()).unwrap();
                     #[cfg(not(feature = "board_m5atom"))]
                     led.set_high().unwrap();
                     sender.send(MessageSND::NegEdge(slot_pos as u8)).unwrap();
-                    edge_count += 1;
                     slot_count += 1;
                 }
             }
