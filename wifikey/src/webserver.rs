@@ -66,6 +66,26 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             <div id="profiles"></div>
         </div>
 
+        <div id="editFormCard" class="card hidden">
+            <h2>Edit Profile</h2>
+            <form id="editForm">
+                <label>WiFi SSID</label>
+                <input type="text" id="editSsid" required maxlength="32">
+                <label>WiFi Password</label>
+                <input type="password" id="editWifipass" maxlength="64" placeholder="(blank = keep current)">
+                <label>Server Name</label>
+                <input type="text" id="editServer" required maxlength="64">
+                <label>Connection Password</label>
+                <input type="password" id="editServerpass" maxlength="64" placeholder="(blank = keep current)">
+                <label style="display:flex;align-items:center;gap:8px;margin:8px 0;color:#eee;cursor:pointer">
+                    <input type="checkbox" id="editTethering" style="width:auto;margin:0">
+                    Mobile/Tethering (skip mDNS)
+                </label>
+                <button type="submit" class="btn-primary">Save Changes</button>
+                <button type="button" class="btn-secondary" onclick="cancelEdit()">Cancel</button>
+            </form>
+        </div>
+
         <div class="card">
             <h2>Add New Profile</h2>
             <form id="addForm">
@@ -140,18 +160,24 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             setTimeout(() => msg.className = 'msg hidden', 3000);
         }
 
+        let currentProfiles = [];
+        let editingIndex = -1;
+
         async function loadProfiles() {
             try {
                 const res = await fetch('/api/profiles');
-                const profiles = await res.json();
+                currentProfiles = await res.json();
                 const container = document.getElementById('profiles');
-                if (profiles.length === 0) {
+                if (currentProfiles.length === 0) {
                     container.innerHTML = '<p style="color:#666">No profiles configured</p>';
                 } else {
-                    container.innerHTML = profiles.map((p, i) =>
+                    container.innerHTML = currentProfiles.map((p, i) =>
                         `<div class="profile-item">
                             <span>${p.ssid} → ${p.server_name}${p.tethering ? ' [T]' : ''}</span>
-                            <button class="btn-danger" onclick="deleteProfile(${i})">Delete</button>
+                            <div style="display:flex;gap:6px">
+                                <button class="btn-secondary" onclick="editProfile(${i})">Edit</button>
+                                <button class="btn-danger" onclick="deleteProfile(${i})">Delete</button>
+                            </div>
                         </div>`
                     ).join('');
                 }
@@ -159,6 +185,52 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 showMsg('Failed to load profiles', false);
             }
         }
+
+        function editProfile(index) {
+            const p = currentProfiles[index];
+            editingIndex = index;
+            document.getElementById('editSsid').value = p.ssid;
+            document.getElementById('editWifipass').value = '';
+            document.getElementById('editServer').value = p.server_name;
+            document.getElementById('editServerpass').value = '';
+            document.getElementById('editTethering').checked = p.tethering;
+            const card = document.getElementById('editFormCard');
+            card.classList.remove('hidden');
+            card.scrollIntoView({behavior: 'smooth'});
+        }
+
+        function cancelEdit() {
+            document.getElementById('editFormCard').classList.add('hidden');
+            editingIndex = -1;
+        }
+
+        document.getElementById('editForm').onsubmit = async (e) => {
+            e.preventDefault();
+            if (editingIndex < 0) return;
+            const profile = {
+                ssid: document.getElementById('editSsid').value,
+                password: document.getElementById('editWifipass').value,
+                server_name: document.getElementById('editServer').value,
+                server_password: document.getElementById('editServerpass').value,
+                tethering: document.getElementById('editTethering').checked
+            };
+            try {
+                const res = await fetch('/api/profiles/' + editingIndex, {
+                    method: 'PUT',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(profile)
+                });
+                if (res.ok) {
+                    showMsg('Profile updated', true);
+                    cancelEdit();
+                    loadProfiles();
+                } else {
+                    showMsg('Failed to update profile', false);
+                }
+            } catch (e) {
+                showMsg('Error: ' + e.message, false);
+            }
+        };
 
         async function scanNetworks() {
             const container = document.getElementById('scanResults');
@@ -618,7 +690,7 @@ impl ConfigWebServer {
     ) -> Result<Self> {
         let server_config = Configuration {
             stack_size: 8192,
-            max_uri_handlers: 16,
+            max_uri_handlers: 20,
             ..Default::default()
         };
 
@@ -731,6 +803,43 @@ impl ConfigWebServer {
                 Ok(())
             },
         )?;
+
+        // Update profile (PUT /api/profiles/{index})
+        for idx in 0..4usize {
+            let cm = config_manager.clone();
+            let uri = format!("/api/profiles/{idx}");
+            server.fn_handler::<anyhow::Error, _>(
+                Box::leak(uri.into_boxed_str()),
+                esp_idf_svc::http::Method::Put,
+                move |mut req| {
+                    let mut buf = [0u8; 512];
+                    let len = req.read(&mut buf).unwrap_or(0);
+                    if let Some(mut profile) = parse_profile_json(&buf[..len]) {
+                        let mut cm = cm.lock().unwrap();
+                        // パスワードが空なら既存のパスワードを保持
+                        let profiles = cm.load_profiles();
+                        if let Some(existing) = profiles.get(idx) {
+                            if profile.password.is_empty() {
+                                profile.password = existing.password.clone();
+                            }
+                            if profile.server_password.is_empty() {
+                                profile.server_password = existing.server_password.clone();
+                            }
+                        }
+                        match cm.update_profile(idx, profile) {
+                            Ok(_) => req.into_ok_response()?.write_all(b"{\"ok\":true}")?,
+                            Err(_) => req
+                                .into_response(400, None, &[])?
+                                .write_all(b"{\"ok\":false}")?,
+                        }
+                    } else {
+                        req.into_response(400, None, &[])?
+                            .write_all(b"{\"ok\":false}")?;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
 
         // Restart device
         server.fn_handler::<anyhow::Error, _>(
@@ -848,9 +957,11 @@ fn profiles_to_json(profiles: &[WifiProfile]) -> String {
         .iter()
         .map(|p| {
             format!(
-                r#"{{"ssid":"{}","server_name":"{}","tethering":{}}}"#,
+                r#"{{"ssid":"{}","password":"{}","server_name":"{}","server_password":"{}","tethering":{}}}"#,
                 escape_json(&p.ssid),
+                escape_json(&p.password),
                 escape_json(&p.server_name),
+                escape_json(&p.server_password),
                 p.tethering
             )
         })

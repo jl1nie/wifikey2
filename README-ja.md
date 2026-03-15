@@ -1,4 +1,7 @@
 > **[English README is here](README.md)**
+>
+> **WiFiKey2 を使い始める方はこちら → [インストールガイド](INSTALL-ja.md)**
+> *(M5Burnerによるファームウェア書き込み・サーバーインストール・初期設定 — 開発環境不要)*
 
 # wifikey2
 
@@ -481,10 +484,10 @@ PCやスマートフォンのブラウザから設定できます。
 
 2. **WiFiに接続**
    - スマートフォンまたはPCで `WifiKey-XXXXXX` (XXXXXXはMACアドレス末尾) に接続
-   - パスワードなし (オープンネットワーク)
+   - パスワード: `wifikey2`
 
 3. **設定画面を開く**
-   - ブラウザで `http://192.168.4.1` にアクセス
+   - ブラウザで `http://192.168.71.1` にアクセス
 
 4. **プロファイルを追加**
    - WiFi SSID / パスワード
@@ -506,7 +509,7 @@ wifikey-serverアプリからESP32をUSB接続で設定できます。
 5. プロファイルを追加・削除
 6. 「Restart ESP32」で反映
 
-#### 方法4: ビルド時設定 (wifikey/cfg.toml)
+#### 方法3: ビルド時設定 (wifikey/cfg.toml)
 
 ソースからビルドする場合、WiFi認証情報をコンパイル時にファームウェアへ書き込むことができます。これにより、初回起動時のAPモード設定が不要になります。
 
@@ -524,9 +527,9 @@ wifikey-serverアプリからESP32をUSB接続で設定できます。
 2. `flash.ps1` でビルド・フラッシュ — APモードやNVS書き込み不要
 3. 後からWeb設定やATコマンドでNVSプロファイルを保存した場合、そちらが優先されます
 
-> **注意**: `wifikey/cfg.toml` はESP32**クライアント**ファームウェアのビルド時デフォルト設定です。ルートの `cfg.toml` は**wifikey-server** (PC) の実行時設定です。
+> **注意**: ルートの `cfg.toml` は**wifikey-server** (PC) の実行時設定と、ESP32ファームウェアのビルド時デフォルト設定を兼ねています。`[wifikey]` セクションがESP32ビルドに使用され、残りの設定はPCサーバーが使用します。
 
-#### 方法3: シリアルターミナルからATコマンド
+#### 方法4: シリアルターミナルからATコマンド
 
 シリアルターミナル (115200bps) から直接ATコマンドで設定できます。
 
@@ -556,9 +559,11 @@ AT+ADD=MyWiFi,wifipassword,JA1XXX/keyer1,serverpassword
 
 | 色 | 状態 |
 |----|------|
-| 赤 | 起動中 / キーイング中 |
-| 青 | APモード (設定待ち) |
-| 消灯 | 通常動作中 |
+| 赤 | 起動中 / ATU起動 |
+| 青 | APモード (点滅) / WiFi再接続中 |
+| 黄 | サーバー探索中 (mDNS / MQTT) |
+| 白 | キーON (送信中) |
+| 消灯 | 接続済み・アイドル |
 
 ## 使い方
 
@@ -612,7 +617,7 @@ AT+ADD=MyWiFi,wifipassword,JA1XXX/keyer1,serverpassword
 
 1. ESP32サーバーを起動 (初回はAPモード)
 2. `WkServer-XXXXXX` WiFiに接続
-3. `http://192.168.4.1` で設定画面を開く
+3. `http://192.168.71.1` で設定画面を開く
 4. 以下を設定:
    - WiFi SSID / パスワード
    - サーバー名 (自分の識別子、例: `JA1XXX/keyer`)
@@ -634,7 +639,7 @@ AT+GPIO=19,39,27  # GPIO設定変更
 .\flash.ps1 -Server
 
 # ボードとCOMポートを指定
-.\flash.ps1 -Server -Board m5atom -Port COM3
+.\flash.ps1 -Server -Board m5atom_lite -Port COM3
 .\flash.ps1 -Server -Board esp32_wrover -Port COM5
 ```
 
@@ -799,6 +804,8 @@ wifikey2/
 ├── sdkconfig.defaults            # ESP-IDF デフォルト設定
 ├── README.md / README-ja.md
 ├── LICENSE
+├── flash.ps1                     # ESP32ビルド・フラッシュスクリプト
+├── build-m5burner.ps1            # M5Burner対応ファームウェアパッケージのビルド
 │
 ├── wifikey/                      # ESP32 ファームウェア (クライアント・サーバー共用)
 │   ├── Cargo.toml                #   クレート設定 (features: server, board_m5atom, etc.)
@@ -854,7 +861,7 @@ wifikey2/
 | クレート | バージョン | 説明 |
 |----------|-----------|------|
 | `wifikey` | 0.2.0 | ESP32ファームウェア (クライアント・サーバー共用; `--features server` でサーバーモード) |
-| `wifikey-server` | 0.3.4 | デスクトップGUIアプリ (**Tauri 2.x**) |
+| `wifikey-server` | 0.3.7 | デスクトップGUIアプリ (**Tauri 2.x**) |
 | `wksocket` | 0.1.0 | KCPベースの通信ライブラリ |
 | `mqttstunclient` | 0.1.0 | MQTT + STUNクライアント |
 
@@ -913,7 +920,7 @@ cargo check -p wifikey-server
 .\flash.ps1 -Server
 
 # ボードとCOMポートを指定
-.\flash.ps1 -Board m5atom -Port COM3
+.\flash.ps1 -Board m5atom_lite -Port COM3
 .\flash.ps1 -Server -Board esp32_wrover -Port COM5
 
 # リリースビルド
@@ -929,7 +936,7 @@ cargo check -p wifikey-server
 
 | パラメータ | 値 | デフォルト | 説明 |
 |-----------|-----|----------|------|
-| `-Board` | `m5atom`, `esp32_wrover` | `m5atom` | ターゲットボード |
+| `-Board` | `m5atom_lite`, `esp32_wrover` | `m5atom_lite` | ターゲットボード |
 | `-Port` | COMポート (例: `COM3`) | 自動検出 | シリアルポート |
 | `-Release` | スイッチ | オフ | リリース (最適化) ビルド |
 | `-MonitorOnly` | スイッチ | オフ | ビルド/フラッシュをスキップしてモニタのみ起動 |
@@ -945,6 +952,32 @@ cargo check -p wifikey-server
 6. シリアルモニタを起動
 
 > **注意**: `CARGO_TARGET_DIR` は `C:\espbuild` に設定されます。これはESP-IDFのWindows上でのパス長制限を回避するためです。
+
+### M5Burnerファームウェアのビルド (build-m5burner.ps1)
+
+`build-m5burner.ps1` スクリプトは、[M5Burner](https://docs.m5stack.com/en/download) での配布に適したファームウェアをビルドします。初回起動時にプロファイルが未設定の場合、自動的にAPモードで起動するため、ユーザーはフラッシュ後にWeb設定画面からWiFiを設定できます。
+
+```powershell
+# M5Atom Lite (デフォルト)
+.\build-m5burner.ps1
+
+# ESP32-WROVER
+.\build-m5burner.ps1 -Board esp32_wrover
+
+# 出力先ディレクトリを指定
+.\build-m5burner.ps1 -OutDir C:\dist
+```
+
+出力: `wifikey2-<board>-<version>.zip` — M5Burner対応パッケージ:
+- `config.json` — ファームウェアメタデータ
+- `wifikey2-<board>-<version>.bin` — マージ済みファームウェアイメージ (0x0からフラッシュ)
+
+フラッシュ後の手順:
+1. 電源ON → LED**青点滅** (APモード)
+2. `WifiKey-XXXXXX` に接続 (パスワード: `wifikey2`)
+3. ブラウザで `http://192.168.71.1` を開く
+4. WiFiプロファイルとサーバー設定を追加
+5. 再起動 → 自動接続
 
 ### cargo-make タスク
 

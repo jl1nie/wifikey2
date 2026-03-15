@@ -1,9 +1,9 @@
 # flash.ps1 - Build and flash wifikey2 ESP32 firmware
-# Usage: .\flash.ps1 [-Board m5atom|m5atom_lite|esp32_wrover] [-Port COM3] [-Release] [-MonitorOnly] [-Server]
+# Usage: .\flash.ps1 [-Board m5atom_lite|esp32_wrover] [-Port COM3] [-Release] [-MonitorOnly] [-Server]
 
 param(
-    [ValidateSet("m5atom", "m5atom_lite", "esp32_wrover")]
-    [string]$Board = "m5atom",
+    [ValidateSet("m5atom_lite", "esp32_wrover")]
+    [string]$Board = "m5atom_lite",
 
     [string]$Port = "",
 
@@ -50,17 +50,17 @@ if ($Port -ne "") {
 if ($MonitorOnly) {
     Write-Host ""
     Write-Host "--- Opening serial monitor ---" -ForegroundColor Cyan
-    & espflash monitor @portArgs
+    $monitorPython = "C:\.embuild\espressif\python_env\idf5.2_py3.13_env\Scripts\python.exe"
+    $monitorPort = if ($Port -ne "") { $Port } else { "COM4" }
+    & $monitorPython -m serial.tools.miniterm $monitorPort 115200
     exit 0
 }
 
 # Select features based on board
 $boardFeature = if ($Board -eq "esp32_wrover") {
     "board_esp32_wrover"
-} elseif ($Board -eq "m5atom_lite") {
-    "board_m5atom"  # M5ATOM Lite: same GPIO layout as M5ATOM (GPIO27=LED, GPIO39=BTN)
 } else {
-    "board_m5atom"
+    "board_m5atom"  # m5atom_lite (GPIO27=LED, GPIO39=BTN)
 }
 
 # Add server feature if requested
@@ -182,26 +182,41 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[OK] NVS binary generated." -ForegroundColor Green
 Write-Host ""
 
-# Flash firmware
+# Flash firmware (use esptool instead of espflash due to espflash connection issue on ESP32-PICO-D4)
 $binary = Join-Path $env:CARGO_TARGET_DIR "xtensa-esp32-espidf\$profileDir\wifikey"
-Write-Host "--- Flashing firmware ---" -ForegroundColor Cyan
-& espflash flash -a no-reset @portArgs $binary
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] Firmware flash failed." -ForegroundColor Red
-    exit 1
-}
-Write-Host "[OK] Firmware flashed (no reset)." -ForegroundColor Green
+$firmwareBin = Join-Path $env:CARGO_TARGET_DIR "firmware.bin"
+$pythonExe = "C:\.embuild\espressif\python_env\idf5.2_py3.13_env\Scripts\python.exe"
 
-# Write NVS partition at offset 0x9000 (chip is still in bootloader)
-Write-Host "--- Writing NVS partition ---" -ForegroundColor Cyan
-& espflash write-bin -a no-reset @portArgs 0x9000 $nvsBin
+Write-Host "--- Generating firmware image ---" -ForegroundColor Cyan
+& espflash save-image --chip esp32 --merge $binary $firmwareBin
 if ($LASTEXITCODE -ne 0) {
-    Write-Host "[ERROR] NVS partition write failed." -ForegroundColor Red
+    Write-Host "[ERROR] Firmware image generation failed." -ForegroundColor Red
     exit 1
 }
-Write-Host "[OK] NVS partition written." -ForegroundColor Green
+Write-Host "[OK] Firmware image generated." -ForegroundColor Green
+
+# Patch NVS binary into firmware image at offset 0x9000
+Write-Host "--- Patching NVS into firmware image ---" -ForegroundColor Cyan
+$fwBytes = [System.IO.File]::ReadAllBytes($firmwareBin)
+$nvsBytes = [System.IO.File]::ReadAllBytes($nvsBin)
+[System.Array]::Copy($nvsBytes, 0, $fwBytes, 0x9000, $nvsBytes.Length)
+[System.IO.File]::WriteAllBytes($firmwareBin, $fwBytes)
+Write-Host "[OK] NVS patched at offset 0x9000." -ForegroundColor Green
+
+Write-Host "--- Flashing firmware + NVS ---" -ForegroundColor Cyan
+$esptoolPortArgs = @()
+if ($Port -ne "") {
+    $esptoolPortArgs = @("--port", $Port)
+}
+& $pythonExe -m esptool @esptoolPortArgs --chip esp32 write_flash 0x0 $firmwareBin
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[ERROR] Flash failed." -ForegroundColor Red
+    exit 1
+}
+Write-Host "[OK] Firmware and NVS flashed." -ForegroundColor Green
 Write-Host ""
 
 # Monitor
 Write-Host "--- Opening serial monitor ---" -ForegroundColor Cyan
-& espflash monitor @portArgs
+$monitorPort = if ($Port -ne "") { $Port } else { "COM4" }
+& $pythonExe -m serial.tools.miniterm $monitorPort 115200

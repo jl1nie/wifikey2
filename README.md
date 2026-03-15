@@ -1,6 +1,9 @@
 # wifikey2
 
 > **[日本語版 README はこちら](README-ja.md)**
+>
+> **New to WiFiKey2? Start here → [Installation Guide](INSTALL.md)**
+> *(M5Burner firmware flashing, server installer, initial setup — no development environment needed)*
 
 Remote CW (Morse code) keying system for amateur radio transceivers over WiFi.
 
@@ -432,10 +435,10 @@ Configure via smartphone or PC browser.
 
 2. **Connect to WiFi**
    - Connect to `WifiKey-XXXXXX` (XXXXXX = MAC address suffix)
-   - No password (open network)
+   - Password: `wifikey2`
 
 3. **Open Settings**
-   - Navigate to `http://192.168.4.1`
+   - Navigate to `http://192.168.71.1`
 
 4. **Add Profile**
    - WiFi SSID / password
@@ -457,7 +460,7 @@ Configure ESP32 via USB from wifikey-server app.
 5. Add/delete profiles
 6. "Restart ESP32" to apply
 
-#### Method 4: Build-time Defaults via wifikey/cfg.toml
+#### Method 3: Build-time Defaults via cfg.toml
 
 For developers building from source, WiFi credentials can be baked into the firmware at compile time. This eliminates the need for AP mode setup on first boot.
 
@@ -475,9 +478,9 @@ For developers building from source, WiFi credentials can be baked into the firm
 2. Build and flash with `flash.ps1` — no AP mode or NVS writing needed
 3. If NVS profiles are saved later (via Web UI or AT commands), they take priority over these defaults
 
-> **Note**: `wifikey/cfg.toml` is for the ESP32 **client** firmware build defaults. The root `cfg.toml` is the runtime config for **wifikey-server** (PC).
+> **Note**: The root `cfg.toml` serves dual purpose: runtime config for **wifikey-server** (PC) and build-time defaults for the ESP32 firmware. The `[wifikey]` section is used by the ESP32 build; the remaining settings are used by the PC server.
 
-#### Method 3: AT Commands via Serial Terminal
+#### Method 4: AT Commands via Serial Terminal
 
 Direct AT commands via serial terminal (115200bps).
 
@@ -507,9 +510,11 @@ AT+ADD=MyWiFi,wifipassword,JA1XXX/keyer1,serverpassword
 
 | Color | State |
 |-------|-------|
-| Red | Starting / Keying |
-| Blue | AP Mode (awaiting config) |
-| Off | Normal operation |
+| Red | Starting up / ATU activation |
+| Blue | AP mode (blinking) / WiFi reconnecting |
+| Yellow | Searching for server (mDNS / MQTT) |
+| White | Key ON (transmitting) |
+| Off | Connected, idle |
 
 ## Usage
 
@@ -564,7 +569,7 @@ Same configuration methods as client (AP Mode + Web UI or AT commands).
 1. Flash server firmware: `.\flash.ps1 -Server`
 2. On first boot, ESP32 enters AP mode automatically
 3. Connect to `WkServer-XXXXXX` WiFi
-4. Open `http://192.168.4.1`
+4. Open `http://192.168.71.1`
 5. Configure:
    - WiFi SSID / password
    - Server name (your identifier, e.g., `JA1XXX/keyer`)
@@ -589,6 +594,7 @@ AT+GPIO=19,39,27  # Change GPIO settings
 .\flash.ps1 -Server
 
 # Specify board and port
+.\flash.ps1 -Server -Board m5atom_lite -Port COM3
 .\flash.ps1 -Server -Board esp32_wrover -Port COM5
 ```
 
@@ -756,6 +762,8 @@ wifikey2/
 ├── sdkconfig.defaults            # ESP-IDF defaults
 ├── README.md / README-ja.md
 ├── LICENSE
+├── flash.ps1                     # Build & flash ESP32 firmware
+├── build-m5burner.ps1            # Build M5Burner-compatible firmware package
 │
 ├── wifikey/                      # ESP32 firmware (client + server mode)
 │   ├── Cargo.toml                #   crate config; [features] server = []
@@ -811,7 +819,7 @@ wifikey2/
 | Crate | Version | Description |
 |-------|---------|-------------|
 | `wifikey` | 0.2.0 | ESP32 firmware (client; `--features server` for PC-less server mode) |
-| `wifikey-server` | 0.3.4 | Desktop GUI application (**Tauri 2.x**) |
+| `wifikey-server` | 0.3.7 | Desktop GUI application (**Tauri 2.x**) |
 | `wksocket` | 0.1.0 | KCP-based communication library |
 | `mqttstunclient` | 0.1.0 | MQTT + STUN client |
 
@@ -870,7 +878,7 @@ The `flash.ps1` script handles the full build-flash-monitor cycle for the ESP32 
 .\flash.ps1 -Server
 
 # Specify board and COM port
-.\flash.ps1 -Board m5atom -Port COM3
+.\flash.ps1 -Board m5atom_lite -Port COM3
 .\flash.ps1 -Server -Board esp32_wrover -Port COM5
 
 # Release build
@@ -886,7 +894,7 @@ The `flash.ps1` script handles the full build-flash-monitor cycle for the ESP32 
 
 | Parameter | Values | Default | Description |
 |-----------|--------|---------|-------------|
-| `-Board` | `m5atom`, `esp32_wrover` | `m5atom` | Target board |
+| `-Board` | `m5atom_lite`, `esp32_wrover` | `m5atom_lite` | Target board |
 | `-Port` | COM port (e.g. `COM3`) | auto-detect | Serial port |
 | `-Release` | switch | off | Release (optimized) build |
 | `-MonitorOnly` | switch | off | Skip build/flash, open serial monitor only |
@@ -902,6 +910,32 @@ The `flash.ps1` script handles the full build-flash-monitor cycle for the ESP32 
 6. Opens the serial monitor
 
 > **Note**: `CARGO_TARGET_DIR` is set to `C:\espbuild` to avoid Windows path length limitations with ESP-IDF.
+
+### Building M5Burner Firmware (build-m5burner.ps1)
+
+The `build-m5burner.ps1` script builds firmware suitable for distribution via [M5Burner](https://docs.m5stack.com/en/download). The firmware automatically enters AP mode on first boot (no profiles configured), so users can configure WiFi via the web UI after flashing.
+
+```powershell
+# M5Atom Lite (default)
+.\build-m5burner.ps1
+
+# ESP32-WROVER
+.\build-m5burner.ps1 -Board esp32_wrover
+
+# Specify output directory
+.\build-m5burner.ps1 -OutDir C:\dist
+```
+
+Output: `wifikey2-<board>-<version>.zip` — M5Burner-compatible package containing:
+- `config.json` — firmware metadata
+- `wifikey2-<board>-<version>.bin` — merged firmware image (flash at 0x0)
+
+After flashing:
+1. Power on the device → LED blinks **blue** (AP mode)
+2. Connect to `WifiKey-XXXXXX` (password: `wifikey2`)
+3. Open `http://192.168.71.1` in browser
+4. Add WiFi profiles and server settings
+5. Restart — device connects automatically
 
 ### cargo-make Tasks
 
