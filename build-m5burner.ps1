@@ -6,7 +6,9 @@
 #
 # Usage: .\build-m5burner.ps1 [-Board m5atom_lite|esp32_wrover] [-OutDir .]
 #
-# Output: wifikey2-<board>-<version>.zip (M5Burner compatible)
+# Output:
+#   wifikey2-<board>-<version>.bin  - merged flash image (for M5Burner site upload)
+#   wifikey2-<board>-<version>.zip  - M5Burner package (config.json + bin)
 
 param(
     [ValidateSet("m5atom_lite", "esp32_wrover")]
@@ -148,10 +150,21 @@ $archive.Dispose()
 $zipStream.Close()
 
 Write-Host "[OK] M5Burner package: $zipPath" -ForegroundColor Green
+
+# ----------------------------------------------------------------
+# Copy .bin to OutDir (for M5Burner site upload)
+# ----------------------------------------------------------------
+$binOutPath = Join-Path $OutDir $binName
+Copy-Item $firmwareBin $binOutPath -Force
+Write-Host "[OK] Flash image:      $binOutPath" -ForegroundColor Green
 Write-Host ""
 Write-Host "=== Done ===" -ForegroundColor Cyan
 Write-Host ""
-Write-Host "Flash with M5Burner, then:" -ForegroundColor White
+Write-Host "Outputs:" -ForegroundColor White
+Write-Host "  $binName  <- upload to M5Burner site"
+Write-Host "  $zipName  <- import into M5Burner app"
+Write-Host ""
+Write-Host "After flashing:" -ForegroundColor White
 Write-Host "  1. Power on the device"
 Write-Host "  2. Connect to WiFi AP: WifiKey-XXXXXX  (password: wifikey2)"
 Write-Host "  3. Open http://192.168.71.1 in browser"
