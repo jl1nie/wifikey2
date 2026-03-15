@@ -126,28 +126,17 @@ $configJson = @{
     )
 } | ConvertTo-Json -Depth 5
 
-# Build zip in memory using .NET
-Add-Type -Assembly System.IO.Compression.FileSystem
+# Build zip using a temp directory
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$tempDir = Join-Path $env:TEMP "wifikey2-zip-$PID"
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+[System.IO.File]::WriteAllText((Join-Path $tempDir "config.json"), $configJson, [System.Text.Encoding]::UTF8)
+Copy-Item $firmwareBin (Join-Path $tempDir $binName)
+
 if (Test-Path $zipPath) { Remove-Item $zipPath }
-
-$zipStream = [System.IO.File]::Open($zipPath, [System.IO.FileMode]::Create)
-$archive = [System.IO.Compression.ZipArchive]::new($zipStream, [System.IO.Compression.ZipArchiveMode]::Create)
-
-# Add config.json
-$configEntry = $archive.CreateEntry("config.json")
-$configWriter = [System.IO.StreamWriter]::new($configEntry.Open())
-$configWriter.Write($configJson)
-$configWriter.Close()
-
-# Add firmware binary
-$firmwareEntry = $archive.CreateEntry($binName)
-$firmwareStream = $firmwareEntry.Open()
-$fwBytes = [System.IO.File]::ReadAllBytes($firmwareBin)
-$firmwareStream.Write($fwBytes, 0, $fwBytes.Length)
-$firmwareStream.Close()
-
-$archive.Dispose()
-$zipStream.Close()
+[System.IO.Compression.ZipFile]::CreateFromDirectory($tempDir, $zipPath)
+Remove-Item $tempDir -Recurse -Force
 
 Write-Host "[OK] M5Burner package: $zipPath" -ForegroundColor Green
 
