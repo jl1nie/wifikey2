@@ -97,23 +97,15 @@ Yaesu FT-891 などのCATコントロールをする場合：
 
 [M5Stack公式サイト](https://docs.m5stack.com/en/download) から **M5Burner** をダウンロードしてインストールします。
 
-### 3-2. ファームウェアのダウンロード
-
-[GitHub Releases](https://github.com/jl1nie/wifikey2/releases) から
-`wifikey2-m5atom_lite-x.x.x.zip` をダウンロードします。
-
-> ESP32-WROVERボードを使う場合は `wifikey2-esp32_wrover-x.x.x.zip` をダウンロードしてください。
-
-### 3-3. M5Burnerでの書き込み
+### 3-2. M5BurnerでWifikey2を検索・書き込み
 
 1. M5Atom Lite を USB-Cケーブルでパソコンに接続
 2. M5Burner を起動
-3. 左上の **「+」** ボタン → **「Import local firmware」** を選択
-4. ダウンロードした `.zip` ファイルを選択
-5. インポートされたファームウェアをクリック
-6. **COM ポート** を選択（不明な場合はデバイスマネージャーで確認）
-7. **「Burn」** ボタンをクリックして書き込み開始
-8. "Done" が表示されたら完了
+3. 左上の検索ボックスに **`Wifikey2`** と入力して検索
+4. 表示された **Wifikey2** をクリック
+5. **COM ポート** を選択（不明な場合はデバイスマネージャーで確認）
+6. **「Burn」** ボタンをクリックして書き込み開始
+7. "Done" が表示されたら完了
 
 > **パターンBのESP32サーバー側も同じ手順**で書き込みます（同じファームウェアです）。
 
@@ -286,15 +278,13 @@ ESP32サーバー側のM5Atom Liteも同様にAPモードで起動します。
 
 ### M5Atom Lite ファームウェア
 
-新しい `wifikey2-m5atom_lite-x.x.x.zip` をダウンロードし、
-M5Burnerで再度書き込みます。
+M5Burnerの **Wifikey2** から最新版を書き込むだけです。
 **NVSのプロファイルは保持されます**（設定のやり直し不要）。
 
 ---
 
 ## 関連リンク
 
-- [GitHub リポジトリ](https://github.com/jl1nie/wifikey2)
-- [GitHub Releases（ダウンロード）](https://github.com/jl1nie/wifikey2/releases)
+- [GitHub Releases（wifikey-serverインストーラー）](https://github.com/jl1nie/wifikey2/releases)
 - [M5Burner ダウンロード](https://docs.m5stack.com/en/download)
 - [開発者向け詳細ドキュメント](README-ja.md)

@@ -98,23 +98,15 @@ Click **Save** to apply the settings.
 Download and install **M5Burner** from the
 [M5Stack official site](https://docs.m5stack.com/en/download).
 
-### 3-2. Download the Firmware
-
-Download `wifikey2-m5atom_lite-x.x.x.zip` from
-[GitHub Releases](https://github.com/jl1nie/wifikey2/releases).
-
-> For ESP32-WROVER boards, download `wifikey2-esp32_wrover-x.x.x.zip` instead.
-
-### 3-3. Flash with M5Burner
+### 3-2. Search and Flash Wifikey2
 
 1. Connect M5Atom Lite to your PC via USB-C cable
 2. Launch M5Burner
-3. Click **「+」** → **「Import local firmware」**
-4. Select the downloaded `.zip` file
-5. Click the imported firmware entry
-6. Select the correct **COM port** (check Device Manager if unsure)
-7. Click **「Burn」** to start flashing
-8. When "Done" is displayed, flashing is complete
+3. Type **`Wifikey2`** in the search box at the top-left
+4. Click **Wifikey2** in the search results
+5. Select the correct **COM port** (check Device Manager if unsure)
+6. Click **「Burn」** to start flashing
+7. When "Done" is displayed, flashing is complete
 
 > **For Pattern B**, flash the same firmware to the ESP32 server unit using the same steps.
 
@@ -286,14 +278,13 @@ Download and run the new `WiFiKey2_x.x.x_x64-setup.exe`. Your settings are prese
 
 ### M5Atom Lite Firmware
 
-Download the new `wifikey2-m5atom_lite-x.x.x.zip` and flash with M5Burner again.
+Search for **Wifikey2** in M5Burner and flash the latest version.
 **NVS profiles are preserved** — no need to reconfigure.
 
 ---
 
 ## Links
 
-- [GitHub Repository](https://github.com/jl1nie/wifikey2)
-- [GitHub Releases (Downloads)](https://github.com/jl1nie/wifikey2/releases)
+- [GitHub Releases (wifikey-server installer)](https://github.com/jl1nie/wifikey2/releases)
 - [M5Burner Download](https://docs.m5stack.com/en/download)
 - [Developer Documentation](README.md)
