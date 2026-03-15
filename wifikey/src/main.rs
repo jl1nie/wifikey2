@@ -506,7 +506,9 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                 }
 
                 // STUN/MQTT step (has_v6はここで判定 — mDNSより後だがSTUN前に十分)
-                let effective_has_v6 = wifi_manager.has_global_ipv6() && !force_v4;
+                // テザリング時はIPv6を試みない（SLAACでグローバルIPv6が付与されても
+                // モバイルルータ/Androidテザリング越しのIPv6疎通は保証されないため）
+                let effective_has_v6 = wifi_manager.has_global_ipv6() && !force_v4 && !profile.tethering;
                 info!("Discovery round {round}: trying STUN/MQTT (has_v6={effective_has_v6})...");
                 let mqtt_udp =
                     match UdpSocket::bind("[::]:0").or_else(|_| UdpSocket::bind("0.0.0.0:0")) {
