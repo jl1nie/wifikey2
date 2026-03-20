@@ -262,7 +262,7 @@ impl LuaUserData for LuaSerialPort {
         );
 
         // port:clear_input()
-        // BGバッファとOSバッファの両方をクリアする
+        // BGバッファをクリアする（OSバッファのPurgeCommはTX中にブロックするため除去）
         methods.add_method("clear_input", |_, this, ()| {
             info!("[serial] clear_input");
             {
@@ -271,12 +271,6 @@ impl LuaUserData for LuaSerialPort {
                     .lock()
                     .map_err(|e| LuaError::RuntimeError(format!("buffer lock failed: {}", e)))?;
                 ring.clear();
-            }
-            {
-                let port = this.write_port.lock().map_err(|e| {
-                    LuaError::RuntimeError(format!("write port lock failed: {}", e))
-                })?;
-                let _ = port.clear(serialport::ClearBuffer::Input);
             }
             // BGスレッドが読み取り中のデータを待ってからもう一度クリア
             sleep(Duration::from_millis(10));

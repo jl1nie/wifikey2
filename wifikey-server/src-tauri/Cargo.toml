@@ -1,6 +1,6 @@
 [package]
 name = "wifikey-server"
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 description = "WiFiKey2 Server - Remote CW Keyer"
 

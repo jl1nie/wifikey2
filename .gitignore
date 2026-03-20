@@ -13,6 +13,9 @@ cfg.toml
 cfg.toml-*
 **/cfg.toml
 
+# Installer output
+dist/
+
 # Built firmware binaries
 wifikey/wifikey.bin
 wifikey2-*.bin

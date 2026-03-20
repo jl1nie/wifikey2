@@ -209,22 +209,22 @@ rig.actions = {
                 log_info("[ATU] 4/6 Monitoring SWR...")
                 local swr_count = 0
                 for i = 1, 20 do
-                    sleep_ms(100)
                     local rok, swr = pcall(function() return self:read_swr() end)
                     if not rok then
                         log_info("[ATU] SWR read error: " .. tostring(swr))
                         break
                     end
-                    log_info(string.format("[ATU] SWR [%d] = %d (good: %d/3)", i, swr, swr_count))
+                    log_info(string.format("[ATU] SWR [%d] = %d (good: %d/2)", i, swr, swr_count))
                     if swr < 50 then
                         swr_count = swr_count + 1
                     else
                         swr_count = 0  -- 連続カウントリセット
                     end
-                    if swr_count >= 3 then
+                    if swr_count >= 2 then
                         log_info("[ATU] SWR converged!")
                         break
                     end
+                    sleep_ms(100)
                 end
             end)
 

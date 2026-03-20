@@ -9,6 +9,9 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ServerDir = Join-Path $ProjectRoot "wifikey-server"
 
+# パス長制限回避
+$env:CARGO_TARGET_DIR = "C:\espbuild"
+
 if ($Release) {
     Write-Host "=== Building wifikey-server (release + installer) ===" -ForegroundColor Cyan
     Push-Location $ServerDir
@@ -19,14 +22,24 @@ if ($Release) {
         Pop-Location
     }
 
-    $nsis = Join-Path $ProjectRoot "target\release\bundle\nsis"
-    $msi  = Join-Path $ProjectRoot "target\release\bundle\msi"
+    $distDir = Join-Path $ProjectRoot "dist"
+    New-Item -ItemType Directory -Force -Path $distDir | Out-Null
+
+    $bundleBase = Join-Path "C:\espbuild" "release\bundle"
+    $copied = @()
+
+    $nsis = Get-ChildItem (Join-Path $bundleBase "nsis") -Filter "*.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($nsis) { Copy-Item $nsis.FullName -Destination $distDir -Force; $copied += $nsis.Name }
+
+    $msi = Get-ChildItem (Join-Path $bundleBase "msi") -Filter "*.msi" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($msi)  { Copy-Item $msi.FullName  -Destination $distDir -Force; $copied += $msi.Name  }
+
     Write-Host ""
     Write-Host "=== Build complete ===" -ForegroundColor Green
-    Write-Host "  NSIS: $(Get-ChildItem $nsis -Filter *.exe | Select-Object -First 1)"
-    Write-Host "  MSI:  $(Get-ChildItem $msi  -Filter *.msi | Select-Object -First 1)"
+    $copied | ForEach-Object { Write-Host "  dist\$_" -ForegroundColor Yellow }
+    if ($copied.Count -eq 0) { throw "No installer found in $bundleBase" }
 } else {
-    Write-Host "=== Building wifikey-server (dev) ===" -ForegroundColor Cyan
+    Write-Host "=== Building wifikey-server (debug) ===" -ForegroundColor Cyan
     Push-Location $ServerDir
     try {
         npx tauri build --debug
