@@ -213,7 +213,13 @@ impl RemoteKeyer {
                 stat.set_session_active(false);
                 break;
             }
-            if let Ok(msgs) = rx_port.recv() {
+            if let Ok(mut msgs) = rx_port.recv() {
+                // キューに溜まったパケットを先読みして一括処理（エンコーダー集約のため）
+                while let Ok(more) = rx_port.try_recv() {
+                    msgs.extend(more);
+                }
+                // エンコーダーイベント集約バッファ: [encoder_id] → 正味ステップ数（符号付き）
+                let mut enc_acc = [0i32; 8];
                 for m in msgs {
                     pkt += 1;
                     match m {
@@ -260,6 +266,18 @@ impl RemoteKeyer {
                             };
                             stat.set_atu_start(false);
                             break;
+                        }
+                        MessageRCV::EncoderEvent { encoder_id, direction, steps } => {
+                            // 即時実行せず集約バッファに積む
+                            let idx = encoder_id as usize;
+                            if idx < enc_acc.len() {
+                                enc_acc[idx] += direction as i32 * steps as i32;
+                            }
+                        }
+                        MessageRCV::ButtonEvent { button_id, press_ms } => {
+                            if let Err(e) = rigcon.on_button_event(button_id, press_ms) {
+                                log::warn!("button_event: {e}");
+                            }
                         }
                         MessageRCV::Pong(ts) => {
                             let rtt = tick_count().wrapping_sub(ts);
@@ -314,6 +332,16 @@ impl RemoteKeyer {
                                 }
                                 sleep(1);
                             }
+                        }
+                    }
+                }
+                // 集約したエンコーダーイベントをまとめて Lua に渡す（1回のシリアル送信）
+                for (idx, &net) in enc_acc.iter().enumerate() {
+                    if net != 0 {
+                        let dir = if net > 0 { 1i8 } else { -1i8 };
+                        let steps = net.unsigned_abs().min(99) as u8;
+                        if let Err(e) = rigcon.on_encoder_event(idx as u8, dir, steps) {
+                            log::warn!("encoder_event: {e}");
                         }
                     }
                 }

@@ -13,6 +13,8 @@
 //! Open http://192.168.4.1 to configure WiFi and server settings.
 
 mod config;
+#[cfg(feature = "encoder")]
+mod encoder;
 #[cfg(feature = "server")]
 mod keyer;
 mod serial_cmd;
@@ -48,7 +50,6 @@ use wksocket::{challenge, WkListener, WkReceiver};
 use wksocket::{response, tick_count, MessageRCV, MessageSND, WkReceiver, WkSender, WkSession, MAX_SLOTS};
 use wksocket::{sleep, MDNS_PROTO, MDNS_SERVICE_NAME};
 
-#[cfg(feature = "server")]
 use config::GpioConfig;
 use config::{ConfigManager, WifiProfile};
 #[cfg(feature = "server")]
@@ -338,6 +339,7 @@ fn main() -> Result<()> {
             &mut mdns,
             &mut keyinput,
             &button,
+            &gpio_config,
             #[cfg(feature = "board_m5atom")]
             &mut serial_led,
             #[cfg(feature = "board_m5atom")]
@@ -453,6 +455,7 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
     mdns: &mut EspMdns,
     keyinput: &mut PinDriver<K, Input>,
     button: &PinDriver<B, Input>,
+    gpio_config: &GpioConfig,
     #[cfg(feature = "board_m5atom")] led: &mut Ws2812Esp32Rmt,
     #[cfg(feature = "board_m5atom")] empty_color: &std::iter::Take<std::iter::Repeat<RGB8>>,
     #[cfg(feature = "board_m5atom")] red_color: &std::iter::Take<std::iter::Repeat<RGB8>>,
@@ -460,12 +463,39 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
     #[cfg(feature = "board_m5atom")] white_color: &std::iter::Take<std::iter::Repeat<RGB8>>,
     #[cfg(not(feature = "board_m5atom"))] led: &mut PinDriver<'_, impl OutputPin, Output>,
 ) -> Result<()> {
+    #[cfg(not(feature = "encoder"))]
+    let _ = gpio_config;
     let mut slot_count: usize = 0;
     // v6接続が失敗した場合に次回のリトライでIPv4を強制するフラグ
     let mut force_v4 = false;
     // WiFi 再接続中に使う青色（ローカル定数）
     #[cfg(feature = "board_m5atom")]
     let blue_color = std::iter::repeat(RGB8 { r: 0, g: 0, b: 5 }).take(1);
+
+    // エンコーダー初期化 (GPIO設定から読み込み)
+    #[cfg(feature = "encoder")]
+    let enc_a = [
+        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[0] as i32) })?,
+        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[1] as i32) })?,
+        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[2] as i32) })?,
+        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[3] as i32) })?,
+    ];
+    #[cfg(feature = "encoder")]
+    let enc_b = [
+        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[0] as i32) })?,
+        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[1] as i32) })?,
+        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[2] as i32) })?,
+        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[3] as i32) })?,
+    ];
+    #[cfg(feature = "encoder")]
+    let enc_a_inv: [bool; 4] = gpio_config.enc_a_inv.map(|v| v != 0);
+    #[cfg(feature = "encoder")]
+    let mut decoders = [
+        encoder::QuadratureDecoder::new(), // MAIN
+        encoder::QuadratureDecoder::new(), // SUB
+        encoder::QuadratureDecoder::new(), // MODE
+        encoder::QuadratureDecoder::new(), // BAND
+    ];
 
     loop {
         // Check WiFi connectivity before attempting server discovery
@@ -618,8 +648,12 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
         let mut sleep_count = 0;
         // ポーリングによるエッジ検出
         let mut last_key_high = keyinput.is_high();
-        // GPIO39ボタンデバウンス用カウンタ
+        // GPIO39ボタンデバウンス用カウンタ (エンコーダー機能なし時のみ使用)
+        #[cfg(not(feature = "encoder"))]
         let mut button_low_count: u32 = 0;
+        // エンコーダー機能時のボタン押下タイムスタンプ
+        #[cfg(feature = "encoder")]
+        let mut button_press_start: Option<u32> = None;
 
         loop {
             sleep(1);
@@ -654,30 +688,84 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                 slot_count = 0;
             }
 
-            // ボタンデバウンス: 100ms連続LOWで発動（GPIO39はプルアップ非対応でフローティング誤検出対策）
-            // ATU発動後はbutton_low_count=101にセットし、一度でもHIGHにならないと再発動しない
-            if button.is_low() {
-                button_low_count += 1;
-                if button_low_count == 100 {
-                    info!("Start ATU");
-                    #[cfg(feature = "board_m5atom")]
-                    led.write(red_color.clone()).unwrap();
-                    #[cfg(not(feature = "board_m5atom"))]
-                    led.set_high().unwrap();
+            // ボタン処理 (エンコーダー機能なし: 100ms連続LOWでATU発動)
+            #[cfg(not(feature = "encoder"))]
+            {
+                // ボタンデバウンス: 100ms連続LOWで発動（GPIO39はプルアップ非対応でフローティング誤検出対策）
+                // ATU発動後はbutton_low_count=101にセットし、一度でもHIGHにならないと再発動しない
+                if button.is_low() {
+                    button_low_count += 1;
+                    if button_low_count == 100 {
+                        info!("Start ATU");
+                        #[cfg(feature = "board_m5atom")]
+                        led.write(red_color.clone()).unwrap();
+                        #[cfg(not(feature = "board_m5atom"))]
+                        led.set_high().unwrap();
 
-                    sender.send(MessageSND::StartATU).unwrap();
-                    sleep(500);
+                        sender.send(MessageSND::StartATU).unwrap();
+                        sleep(500);
 
-                    #[cfg(feature = "board_m5atom")]
-                    led.write(empty_color.clone()).unwrap();
-                    #[cfg(not(feature = "board_m5atom"))]
-                    led.set_low().unwrap();
+                        #[cfg(feature = "board_m5atom")]
+                        led.write(empty_color.clone()).unwrap();
+                        #[cfg(not(feature = "board_m5atom"))]
+                        led.set_low().unwrap();
 
-                    dozing = false;
-                    button_low_count = 101; // ボタン解放まで再発動防止
+                        dozing = false;
+                        button_low_count = 101; // ボタン解放まで再発動防止
+                    }
+                } else {
+                    button_low_count = 0;
                 }
-            } else {
-                button_low_count = 0;
+            }
+
+            // ボタン処理 (エンコーダー機能あり: 離した瞬間にButtonEvent送信)
+            #[cfg(feature = "encoder")]
+            {
+                if button.is_low() {
+                    if button_press_start.is_none() {
+                        button_press_start = Some(now);
+                    }
+                } else if let Some(start) = button_press_start.take() {
+                    let press_ms = now.wrapping_sub(start).min(u16::MAX as u32) as u16;
+                    info!("Button[0] press_ms={}", press_ms);
+                    if sender.send(MessageSND::ButtonEvent { button_id: 0, press_ms }).is_err() {
+                        info!("Connection closed by peer");
+                        break;
+                    }
+                    dozing = false;
+                }
+            }
+
+            // エンコーダーポーリング (WROVER32専用)
+            #[cfg(feature = "encoder")]
+            {
+                for i in 0..4 {
+                    let a = enc_a[i].is_high() ^ enc_a_inv[i];
+                    let b = enc_b[i].is_high();
+                    if let Some(dir) = decoders[i].tick(a, b, now) {
+                        let steps = if i == 0 {
+                            // MAIN: 速度に応じてステップ数を増やす
+                            encoder::QuadratureDecoder::velocity_multiplier(
+                                decoders[0].last_interval_ms,
+                            )
+                        } else {
+                            1
+                        };
+                        info!("Encoder[{}] dir={} steps={}", i, dir, steps);
+                        if sender
+                            .send(MessageSND::EncoderEvent {
+                                encoder_id: i as u8,
+                                direction: dir,
+                                steps,
+                            })
+                            .is_err()
+                        {
+                            info!("Connection closed by peer");
+                            break;
+                        }
+                        dozing = false;
+                    }
+                }
             }
 
             // ISRが発火した場合は再アーム（ISR自体はAtomic flagセットのみ）

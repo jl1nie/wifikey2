@@ -154,8 +154,9 @@ body {
 
 /* Controls */
 .controls {
-    display: flex;
-    gap: 12px;
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
 }
 
 /* Log section */
@@ -450,4 +451,42 @@ body {
     font-size: 1rem;
     margin-bottom: 12px;
     color: var(--text-secondary);
+}
+
+/* Kill switch */
+.btn-kill {
+    background-color: #b71c1c;
+    color: white;
+    font-weight: bold;
+    font-size: 0.85rem;
+    padding: 5px 12px;
+    border: 2px solid #f44336;
+    border-radius: 6px;
+    cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: background-color 0.15s;
+}
+
+.btn-kill:hover {
+    background-color: #d32f2f;
+}
+
+.btn-kill.stopped {
+    background-color: #1b5e20;
+    border-color: #4caf50;
+    color: #a5d6a7;
+}
+
+.btn-kill.stopped:hover {
+    background-color: #2e7d32;
+}
+
+.kill-banner {
+    background-color: #b71c1c;
+    color: white;
+    text-align: center;
+    padding: 8px;
+    font-weight: bold;
+    font-size: 0.9rem;
+    letter-spacing: 0.03em;
 }

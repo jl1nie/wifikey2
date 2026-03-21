@@ -16,6 +16,8 @@ pub enum PacketKind {
     StartATU,
     Ping,
     Pong,
+    EncoderEvent = 4,
+    ButtonEvent = 5,
 }
 #[derive(PartialEq)]
 pub enum MessageSND {
@@ -26,6 +28,8 @@ pub enum MessageSND {
     StartATU,
     Ping(u32),
     Pong(u32),
+    EncoderEvent { encoder_id: u8, direction: i8, steps: u8 },
+    ButtonEvent { button_id: u8, press_ms: u16 },
 }
 
 pub struct WkSender {
@@ -112,6 +116,41 @@ impl WkSender {
                             break;
                         }
                     }
+                    MessageSND::EncoderEvent { encoder_id, direction, steps } => {
+                        // tm = [encoder_id(8)] [dir+128(8)] [steps(8)] [0(8)]
+                        let dir_byte = (direction as i16 + 128) as u8;
+                        let tm = ((encoder_id as u32) << 24)
+                            | ((dir_byte as u32) << 16)
+                            | ((steps as u32) << 8);
+                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::EncoderEvent, tm, &[]) {
+                            log::error!("encode error: {e}");
+                            continue;
+                        }
+                        if let Ok(n) = session.send(&buf) {
+                            trace!("EncoderEvent {n} bytes enc={encoder_id} dir={direction} steps={steps}");
+                        } else {
+                            trace!("session closed by peer");
+                            let _ = session.close();
+                            closed.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
+                    MessageSND::ButtonEvent { button_id, press_ms } => {
+                        // tm = [0(8)] [button_id(8)] [press_ms(16)]
+                        let tm = ((button_id as u32) << 16) | (press_ms as u32);
+                        if let Err(e) = WkSender::encode(&mut buf, PacketKind::ButtonEvent, tm, &[]) {
+                            log::error!("encode error: {e}");
+                            continue;
+                        }
+                        if let Ok(n) = session.send(&buf) {
+                            trace!("ButtonEvent {n} bytes btn={button_id} press_ms={press_ms}");
+                        } else {
+                            trace!("session closed by peer");
+                            let _ = session.close();
+                            closed.store(true, Ordering::Relaxed);
+                            break;
+                        }
+                    }
                 }
             }
             if closed.load(Ordering::Relaxed) {
@@ -156,6 +195,8 @@ pub enum MessageRCV {
     StartATU,
     Ping(u32),
     Pong(u32),
+    EncoderEvent { encoder_id: u8, direction: i8, steps: u8 },
+    ButtonEvent { button_id: u8, press_ms: u16 },
 }
 
 pub struct WkReceiver {
@@ -179,6 +220,8 @@ impl WkReceiver {
                             trace!("receiver dropped, closing session");
                             break;
                         }
+                        // データがある間はスリープせず連続取得（エンコーダー遅延防止）
+                        continue;
                     }
                 } else {
                     let slots = vec![MessageRCV::SessionClosed];
@@ -243,6 +286,16 @@ impl WkReceiver {
             slots.push(MessageRCV::Ping(tm))
         } else if cmd == PacketKind::Pong as u8 {
             slots.push(MessageRCV::Pong(tm))
+        } else if cmd == PacketKind::EncoderEvent as u8 {
+            let encoder_id = (tm >> 24) as u8;
+            let dir_byte = (tm >> 16) as u8;
+            let direction = (dir_byte as i16 - 128) as i8;
+            let steps = (tm >> 8) as u8;
+            slots.push(MessageRCV::EncoderEvent { encoder_id, direction, steps })
+        } else if cmd == PacketKind::ButtonEvent as u8 {
+            let button_id = (tm >> 16) as u8;
+            let press_ms = (tm & 0xFFFF) as u16;
+            slots.push(MessageRCV::ButtonEvent { button_id, press_ms })
         } else if len == 0 {
             trace!("Sync {tm}");
             slots.push(MessageRCV::Sync(tm))
@@ -358,5 +411,40 @@ mod tests {
         assert_eq!(msgs[1], MessageRCV::Keyup(5010));
         assert_eq!(msgs[2], MessageRCV::Keydown(5015));
         assert_eq!(msgs[3], MessageRCV::Keyup(5025));
+    }
+
+    #[test]
+    fn test_encoder_event_roundtrip() {
+        let mut buf = BytesMut::with_capacity(128);
+        let dir_byte = (1i16 + 128) as u8; // direction = +1
+        let tm = ((2u32) << 24) | ((dir_byte as u32) << 16) | ((5u32) << 8);
+        WkSender::encode(&mut buf, PacketKind::EncoderEvent, tm, &[]).unwrap();
+
+        let msgs = WkReceiver::decode(&buf);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], MessageRCV::EncoderEvent { encoder_id: 2, direction: 1, steps: 5 });
+    }
+
+    #[test]
+    fn test_encoder_event_negative_direction() {
+        let mut buf = BytesMut::with_capacity(128);
+        let dir_byte = (-1i16 + 128) as u8; // direction = -1 → 127
+        let tm = ((0u32) << 24) | ((dir_byte as u32) << 16) | ((3u32) << 8);
+        WkSender::encode(&mut buf, PacketKind::EncoderEvent, tm, &[]).unwrap();
+
+        let msgs = WkReceiver::decode(&buf);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], MessageRCV::EncoderEvent { encoder_id: 0, direction: -1, steps: 3 });
+    }
+
+    #[test]
+    fn test_button_event_roundtrip() {
+        let mut buf = BytesMut::with_capacity(128);
+        let tm = ((1u32) << 16) | 1500u32; // button_id=1, press_ms=1500
+        WkSender::encode(&mut buf, PacketKind::ButtonEvent, tm, &[]).unwrap();
+
+        let msgs = WkReceiver::decode(&buf);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0], MessageRCV::ButtonEvent { button_id: 1, press_ms: 1500 });
     }
 }

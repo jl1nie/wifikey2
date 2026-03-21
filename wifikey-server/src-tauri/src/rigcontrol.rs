@@ -302,6 +302,7 @@ pub struct RigControl {
     keying_port: Option<Arc<Mutex<Box<dyn SerialPort>>>>,
     lua_state: Option<Mutex<LuaState>>,
     use_rts_for_keying: bool,
+    emergency_stop: Arc<AtomicBool>,
 }
 
 /// Mode enum — Rust側で文字列との変換を担当
@@ -459,12 +460,15 @@ impl RigControl {
             let _ = port.write_request_to_send(false);
         }
 
+        let emergency_stop = Arc::new(AtomicBool::new(false));
+
         // Luaスクリプトを読み込み、serial_configでリグコントロールポートを開く
         let lua_state = match Self::init_lua(
             rig_script,
             rigcontrol_port,
             Some(&keying_port),
             use_rts_for_keying,
+            emergency_stop.clone(),
         ) {
             Ok(state) => {
                 info!("Lua script '{}' loaded successfully", rig_script);
@@ -483,6 +487,7 @@ impl RigControl {
             keying_port: Some(keying_port),
             lua_state,
             use_rts_for_keying,
+            emergency_stop,
         })
     }
 
@@ -492,6 +497,7 @@ impl RigControl {
         rigcontrol_port: &str,
         keying_port: Option<&Arc<Mutex<Box<dyn SerialPort>>>>,
         use_rts_for_keying: bool,
+        emergency_stop: Arc<AtomicBool>,
     ) -> Result<LuaState> {
         let script_path = find_script(rig_script)?;
         info!("[lua] Loading script from: {:?}", script_path);
@@ -505,6 +511,21 @@ impl RigControl {
             LuaOptions::default(),
         )
         .map_err(|e| anyhow::anyhow!("Failed to create Lua VM: {}", e))?;
+
+        // 緊急停止フック: emergency_stop フラグが立ったら Lua 命令境界で中断する
+        lua.set_hook(
+            mlua::HookTriggers {
+                every_line: true,
+                ..Default::default()
+            },
+            move |_lua, _debug| {
+                if emergency_stop.load(Ordering::Relaxed) {
+                    Err(mlua::Error::RuntimeError("emergency stop".to_string()))
+                } else {
+                    Ok(mlua::VmState::Continue)
+                }
+            },
+        );
 
         // グローバル関数: log_info(msg)
         let log_info = lua
@@ -606,11 +627,33 @@ impl RigControl {
             keying_port: None,
             lua_state: None,
             use_rts_for_keying: false,
+            emergency_stop: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// 緊急停止: キー/ATU 出力を即時解除し、以降の Lua 呼び出しをブロックする
+    pub fn emergency_stop(&self) {
+        self.emergency_stop.store(true, Ordering::Relaxed);
+        self.assert_key(false);
+        self.assert_atu(false);
+        info!("Emergency stop activated");
+    }
+
+    /// 緊急停止を解除し、通常動作に戻す
+    pub fn reset_stop(&self) {
+        self.emergency_stop.store(false, Ordering::Relaxed);
+        info!("Emergency stop cleared");
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.emergency_stop.load(Ordering::Relaxed)
     }
 
     /// Lua関数を呼び出すヘルパー（引数なし、戻り値T）
     fn call_lua<T: FromLua>(&self, func_name: &str) -> Result<T> {
+        if self.emergency_stop.load(Ordering::Relaxed) {
+            bail!("emergency stop is active")
+        }
         info!("[lua call] {}()", func_name);
         let Some(ref lua_state) = self.lua_state else {
             info!("[lua call] FAIL: no Lua state");
@@ -637,6 +680,9 @@ impl RigControl {
 
     /// Lua関数を呼び出すヘルパー（引数1つ、戻り値T）
     fn call_lua_with<A: IntoLua, T: FromLua>(&self, func_name: &str, arg: A) -> Result<T> {
+        if self.emergency_stop.load(Ordering::Relaxed) {
+            bail!("emergency stop is active")
+        }
         info!("[lua call] {}(arg)", func_name);
         let Some(ref lua_state) = self.lua_state else {
             info!("[lua call] FAIL: no Lua state");
@@ -668,6 +714,9 @@ impl RigControl {
         arg1: A1,
         arg2: A2,
     ) -> Result<T> {
+        if self.emergency_stop.load(Ordering::Relaxed) {
+            bail!("emergency stop is active")
+        }
         info!("[lua call] {}(arg1, arg2)", func_name);
         let Some(ref lua_state) = self.lua_state else {
             info!("[lua call] FAIL: no Lua state");
@@ -689,6 +738,41 @@ impl RigControl {
             anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
         })?;
         info!("[lua call] {}(arg1, arg2) OK", func_name);
+        Ok(result)
+    }
+
+    /// Lua関数を呼び出すヘルパー（引数3つ、戻り値T）
+    fn call_lua_with3<A1: IntoLua, A2: IntoLua, A3: IntoLua, T: FromLua>(
+        &self,
+        func_name: &str,
+        arg1: A1,
+        arg2: A2,
+        arg3: A3,
+    ) -> Result<T> {
+        if self.emergency_stop.load(Ordering::Relaxed) {
+            bail!("emergency stop is active")
+        }
+        info!("[lua call] {}(arg1, arg2, arg3)", func_name);
+        let Some(ref lua_state) = self.lua_state else {
+            info!("[lua call] FAIL: no Lua state");
+            bail!("rig control not available (no Lua state)")
+        };
+        let state = lua_state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Lua state lock failed: {}", e))?;
+        let rig_table: LuaTable = state
+            .lua
+            .registry_value(&state.rig_script)
+            .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
+        let func: LuaFunction = rig_table.get(func_name).map_err(|e| {
+            info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+            anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
+        })?;
+        let result: T = func.call((rig_table.clone(), arg1, arg2, arg3)).map_err(|e| {
+            info!("[lua call] FAIL: {}(arg1, arg2, arg3) error: {}", func_name, e);
+            anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
+        })?;
+        info!("[lua call] {}(arg1, arg2, arg3) OK", func_name);
         Ok(result)
     }
 
@@ -743,15 +827,15 @@ impl RigControl {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn encoder_up(&self, main: bool, step: usize) -> Result<()> {
-        self.call_lua_with2::<bool, usize, LuaValue>("encoder_up", main, step)?;
+    /// エンコーダーイベントをLuaスクリプトの on_encoder(id, dir, steps) に渡す
+    pub fn on_encoder_event(&self, encoder_id: u8, direction: i8, steps: u8) -> Result<()> {
+        self.call_lua_with3::<u8, i8, u8, LuaValue>("on_encoder", encoder_id, direction, steps)?;
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn encoder_down(&self, main: bool, step: usize) -> Result<()> {
-        self.call_lua_with2::<bool, usize, LuaValue>("encoder_down", main, step)?;
+    /// ボタンイベントをLuaスクリプトの on_button(id, press_ms) に渡す
+    pub fn on_button_event(&self, button_id: u8, press_ms: u16) -> Result<()> {
+        self.call_lua_with2::<u8, u16, LuaValue>("on_button", button_id, press_ms)?;
         Ok(())
     }
 
