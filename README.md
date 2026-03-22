@@ -356,7 +356,9 @@ return rig
 |--------|-------------|----------|------|---------|
 | `ftdx10.lua` | Yaesu FTDX10 | Yaesu CAT (ASCII, `;` terminated) | 38400 | Yes (4 encoders + button) |
 | `yaesu_ft891.lua` | Yaesu FT-891 | Yaesu CAT (ASCII, `;` terminated) | 4800 | No |
-| `icom_template.lua` | ICOM (template) | CI-V (`FE FE` framed, BCD freq) | 9600 | No |
+| `icom_ic7300.lua` | ICOM IC-7300 | CI-V (`FE FE` framed, BCD freq) | 19200 | Yes (4 encoders + button) |
+| `icom_ic705.lua` | ICOM IC-705 | CI-V (`FE FE` framed, BCD freq) | 19200 | Yes (4 encoders + button) |
+| `icom_template.lua` | ICOM (generic template) | CI-V (`FE FE` framed, BCD freq) | 9600 | No |
 
 To add support for a new transceiver, copy an existing script and implement the protocol-specific commands.
 

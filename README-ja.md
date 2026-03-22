@@ -381,7 +381,9 @@ return rig
 |-----------|-----------|-----------|-----------|-----------|
 | `ftdx10.lua` | Yaesu FTDX10 | Yaesu CAT (ASCII, `;` 区切り) | 38400 | 対応 (4軸+ボタン) |
 | `yaesu_ft891.lua` | Yaesu FT-891 | Yaesu CAT (ASCII, `;` 区切り) | 4800 | なし |
-| `icom_template.lua` | ICOM (テンプレート) | CI-V (`FE FE` フレーム, BCD周波数) | 9600 | なし |
+| `icom_ic7300.lua` | ICOM IC-7300 | CI-V (`FE FE` フレーム, BCD周波数) | 19200 | 対応 (4軸+ボタン) |
+| `icom_ic705.lua` | ICOM IC-705 | CI-V (`FE FE` フレーム, BCD周波数) | 19200 | 対応 (4軸+ボタン) |
+| `icom_template.lua` | ICOM (汎用テンプレート) | CI-V (`FE FE` フレーム, BCD周波数) | 9600 | なし |
 
 新しい無線機に対応するには、既存のスクリプトをコピーしてプロトコル固有のコマンドを実装してください。
 
