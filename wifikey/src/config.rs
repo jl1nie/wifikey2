@@ -57,6 +57,17 @@ pub mod default_gpio {
     pub use inner::*;
 }
 
+/// Default encoder GPIO pin assignments (WROVER32)
+#[cfg(feature = "encoder")]
+pub mod default_encoder {
+    /// A-phase pins: MAIN(35), SUB(32), MODE(25), BAND(14)
+    pub const ENC_A: [u8; 4] = [35, 32, 25, 14];
+    /// B-phase pins: MAIN(34), SUB(33), MODE(26), BAND(27)
+    pub const ENC_B: [u8; 4] = [34, 33, 26, 27];
+    /// A-phase inversion flags (1=invert): MAIN and BAND are inverted
+    pub const ENC_A_INV: [u8; 4] = [1, 0, 0, 1];
+}
+
 // ============================================================
 // GPIO Configuration
 // ============================================================
@@ -73,6 +84,15 @@ pub struct GpioConfig {
     pub button: u8,
     /// GPIO pin for LED output
     pub led: u8,
+    /// Encoder A-phase pins: [MAIN, SUB, MODE, BAND]
+    #[cfg(feature = "encoder")]
+    pub enc_a: [u8; 4],
+    /// Encoder B-phase pins: [MAIN, SUB, MODE, BAND]
+    #[cfg(feature = "encoder")]
+    pub enc_b: [u8; 4],
+    /// Encoder A-phase inversion flags (1=invert): [MAIN, SUB, MODE, BAND]
+    #[cfg(feature = "encoder")]
+    pub enc_a_inv: [u8; 4],
 }
 
 impl Default for GpioConfig {
@@ -81,25 +101,36 @@ impl Default for GpioConfig {
             key_gpio: default_gpio::KEY_GPIO,
             button: default_gpio::BUTTON,
             led: default_gpio::LED,
+            #[cfg(feature = "encoder")]
+            enc_a: default_encoder::ENC_A,
+            #[cfg(feature = "encoder")]
+            enc_b: default_encoder::ENC_B,
+            #[cfg(feature = "encoder")]
+            enc_a_inv: default_encoder::ENC_A_INV,
         }
     }
 }
 
 impl GpioConfig {
     /// Serialize to bytes for NVS storage
-    /// Format: [magic][version][key_gpio][button][led]
+    /// Format v1: [0x47][0x50][0x01][key_gpio][button][led]
+    /// Format v2: [0x47][0x50][0x02][key_gpio][button][led][enc_a×4][enc_b×4][enc_a_inv×4]
     fn to_bytes(&self) -> Vec<u8> {
-        vec![
-            0x47,
-            0x50, // Magic: "GP"
-            0x01, // Version 1
-            self.key_gpio,
-            self.button,
-            self.led,
-        ]
+        #[cfg(feature = "encoder")]
+        {
+            let mut buf = vec![0x47, 0x50, 0x02, self.key_gpio, self.button, self.led];
+            buf.extend_from_slice(&self.enc_a);
+            buf.extend_from_slice(&self.enc_b);
+            buf.extend_from_slice(&self.enc_a_inv);
+            buf
+        }
+        #[cfg(not(feature = "encoder"))]
+        {
+            vec![0x47, 0x50, 0x01, self.key_gpio, self.button, self.led]
+        }
     }
 
-    /// Deserialize from bytes
+    /// Deserialize from bytes (supports v1 and v2)
     fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() < 6 {
             return Err(anyhow!("GPIO config too short"));
@@ -107,23 +138,56 @@ impl GpioConfig {
         if data[0] != 0x47 || data[1] != 0x50 {
             return Err(anyhow!("Invalid GPIO config magic"));
         }
-        if data[2] != 0x01 {
-            return Err(anyhow!("Unsupported GPIO config version"));
+        let key_gpio = data[3];
+        let button = data[4];
+        let led = data[5];
+        match data[2] {
+            0x01 => Ok(Self {
+                key_gpio,
+                button,
+                led,
+                #[cfg(feature = "encoder")]
+                enc_a: default_encoder::ENC_A,
+                #[cfg(feature = "encoder")]
+                enc_b: default_encoder::ENC_B,
+                #[cfg(feature = "encoder")]
+                enc_a_inv: default_encoder::ENC_A_INV,
+            }),
+            #[cfg(feature = "encoder")]
+            0x02 => {
+                if data.len() < 18 {
+                    return Err(anyhow!("GPIO config v2 too short"));
+                }
+                Ok(Self {
+                    key_gpio,
+                    button,
+                    led,
+                    enc_a: [data[6], data[7], data[8], data[9]],
+                    enc_b: [data[10], data[11], data[12], data[13]],
+                    enc_a_inv: [data[14], data[15], data[16], data[17]],
+                })
+            }
+            v => Err(anyhow!("Unsupported GPIO config version: {}", v)),
         }
-        Ok(Self {
-            key_gpio: data[3],
-            button: data[4],
-            led: data[5],
-        })
     }
 
     /// Validate GPIO configuration
     pub fn validate(&self) -> Result<()> {
         // ESP32 has GPIO 0-39, but some are reserved
-        let reserved_pins = [6, 7, 8, 9, 10, 11]; // Flash pins
-        let max_gpio = 39;
+        let reserved_pins = [6u8, 7, 8, 9, 10, 11]; // Flash pins
+        let max_gpio = 39u8;
 
-        for &pin in &[self.key_gpio, self.button, self.led] {
+        #[cfg(not(feature = "encoder"))]
+        let all_pins = vec![self.key_gpio, self.button, self.led];
+        #[cfg(feature = "encoder")]
+        let all_pins = {
+            let mut v = vec![self.key_gpio, self.button, self.led];
+            v.extend_from_slice(&self.enc_a);
+            v.extend_from_slice(&self.enc_b);
+            v
+        };
+
+        for &pin in &all_pins {
             if pin > max_gpio {
                 return Err(anyhow!("GPIO {} out of range (max {})", pin, max_gpio));
             }
@@ -132,7 +196,7 @@ impl GpioConfig {
             }
         }
 
-        // Check for duplicates
+        // Check for duplicates among key/button/led
         if self.key_gpio == self.button || self.key_gpio == self.led || self.button == self.led {
             return Err(anyhow!("GPIO pins must be unique"));
         }
@@ -413,7 +477,7 @@ impl ConfigManager {
 
     /// Load GPIO configuration from NVS, falling back to defaults if not found or invalid
     pub fn load_gpio_config(&self) -> GpioConfig {
-        let mut buf = [0u8; 16];
+        let mut buf = [0u8; 32];
 
         match self.nvs.get_blob(Self::GPIO_KEY, &mut buf) {
             Ok(Some(data)) => match GpioConfig::from_bytes(data) {

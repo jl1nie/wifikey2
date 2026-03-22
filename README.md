@@ -303,6 +303,13 @@ function rig:read_swr()         ... end   -- Read SWR meter
 function rig:encoder_up(main, step)   ... end
 function rig:encoder_down(main, step) ... end
 
+-- Optional: encoder and button event handlers (encoder feature / ESP32-WROVER only)
+-- encoder_id: 0=MAIN(Fine), 1=SUB(Coarse), 2=MODE, 3=BAND
+-- direction: +1 (CW) or -1 (CCW), steps: accumulated steps (1-99)
+function rig.on_encoder(self, encoder_id, direction, steps) ... end
+-- button_id: 0=main button, press_ms: press duration in milliseconds
+function rig.on_button(self, button_id, press_ms)           ... end
+
 -- Optional: custom UI actions
 rig.actions = {
     start_atu = {
@@ -331,16 +338,25 @@ return rig
 | `rig_control:assert_key(bool)` | Assert/deassert CW key (DTR/RTS) |
 | `rig_control:assert_atu(bool)` | Assert/deassert ATU trigger pin |
 | `log_info(msg)` | Log to server console |
+| `log_trace(msg)` | Trace-level log (verbose) |
 | `sleep_ms(ms)` | Sleep for milliseconds |
+
+**Encoder/Button callbacks** (ESP32-WROVER `encoder` feature only):
+
+| Callback | Description |
+|----------|-------------|
+| `rig.on_encoder(self, encoder_id, direction, steps)` | Called when an encoder rotates. `encoder_id`: 0=MAIN, 1=SUB, 2=MODE, 3=BAND. `direction`: +1 (CW) / -1 (CCW). `steps`: coalesced step count (1–99). |
+| `rig.on_button(self, button_id, press_ms)` | Called on button release. `button_id`: 0=main button. `press_ms`: press duration in ms. Typically used for short/long-press discrimination. |
 
 **Sandboxing**: Only `table`, `string`, `math`, `coroutine` standard libraries are available. No `io`, `os`, or `debug` access.
 
 #### Included Scripts
 
-| Script | Transceiver | Protocol | Baud |
-|--------|-------------|----------|------|
-| `yaesu_ft891.lua` | Yaesu FT-891 | Yaesu CAT (ASCII, `;` terminated) | 4800 |
-| `icom_template.lua` | ICOM (template) | CI-V (`FE FE` framed, BCD freq) | 9600 |
+| Script | Transceiver | Protocol | Baud | Encoder |
+|--------|-------------|----------|------|---------|
+| `ftdx10.lua` | Yaesu FTDX10 | Yaesu CAT (ASCII, `;` terminated) | 38400 | Yes (4 encoders + button) |
+| `yaesu_ft891.lua` | Yaesu FT-891 | Yaesu CAT (ASCII, `;` terminated) | 4800 | No |
+| `icom_template.lua` | ICOM (template) | CI-V (`FE FE` framed, BCD freq) | 9600 | No |
 
 To add support for a new transceiver, copy an existing script and implement the protocol-specific commands.
 
@@ -440,12 +456,17 @@ Configure via smartphone or PC browser.
 3. **Open Settings**
    - Navigate to `http://192.168.71.1`
 
-4. **Add Profile**
+4. **Configure WiFi Profile** (Profiles tab)
    - WiFi SSID / password
    - Server name / password
    - Click "Add Profile"
 
-5. **Restart**
+5. **Configure GPIO** (GPIO tab, optional)
+   - Key GPIO, Button GPIO, LED GPIO
+   - Encoder A/B-phase pins × 4 and A-phase inversion flags (ESP32-WROVER only)
+   - Changes take effect after restart
+
+6. **Restart**
    - Click "Save & Restart"
    - ESP32 restarts and connects to configured WiFi
 
@@ -626,6 +647,25 @@ Default GPIO assignments per board. Configurable via Web UI or AT commands.
 - **KEY_GPIO** (server): Keying output to photocoupler (active = transmit)
 - **BUTTON**: ATU trigger (client) / AP mode switch (server) (internal pull-up)
 - **LED**: Status indicator
+
+##### Encoder GPIO (ESP32-WROVER only, `board_esp32_wrover` / `encoder` feature)
+
+| Encoder | encoder_id | A-phase | B-phase | A-phase inverted | Latch Mode |
+|---------|-----------|---------|---------|-----------------|------------|
+| MAIN (Fine VFO) | 0 | GPIO35 | GPIO34 | Yes | Two03 |
+| SUB (Coarse VFO) | 1 | GPIO32 | GPIO33 | No | Four3 |
+| MODE | 2 | GPIO25 | GPIO26 | No | Four3 |
+| BAND | 3 | GPIO14 | GPIO27 | Yes | Two03 |
+
+> GPIO35 and GPIO34 are input-only (no internal pull-up available). All other encoder pins use internal pull-up.
+>
+> **Latch modes** — Two03: latches on states 0 and 3 (full-cycle, higher resolution). Four3: latches on state 3 only (half-cycle, suitable for encoders with detents).
+>
+> **A-phase inversion** (`enc_a_inv`) — Swaps the effective rotation direction for that encoder. Set to 1 if the encoder rotates in the opposite direction to what is expected.
+
+**`encoder_id` mapping**: The `encoder_id` value passed to `rig.on_encoder` is the **array index** of the `enc_a`/`enc_b` pin lists (0–3). Changing GPIO pin assignments in the Web UI does not change the `encoder_id` numbers seen by the Lua script — only the physical wiring changes.
+
+GPIO assignments are configurable via the Web UI (`http://192.168.71.1`, GPIO tab) after flashing.
 
 #### Circuit Design
 

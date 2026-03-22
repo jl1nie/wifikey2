@@ -11,11 +11,17 @@
         <!-- Header -->
         <header class="header">
             <h1 id="app-title" class="title">WiFiKey2</h1>
-            <div>
+            <div style="display:flex;align-items:center;gap:6px;">
+                <button id="kill-btn" class="btn btn-kill" title="緊急停止: キー解除 + Lua停止 + セッション切断">STOP</button>
                 <button id="esp32-btn" class="icon-btn" title="ESP32 Config">📡</button>
                 <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
             </div>
         </header>
+
+        <!-- 緊急停止バナー (停止中のみ表示) -->
+        <div id="kill-banner" class="kill-banner" style="display:none;">
+            ⚠️ 緊急停止中 — キー出力・Lua無効
+        </div>
 
         <!-- Session Info -->
         <section class="section">
@@ -58,9 +64,9 @@
         <section class="section log-section">
             <div class="log-header" id="log-toggle">
                 <span>Log</span>
-                <span id="log-arrow" class="arrow">▼</span>
+                <span id="log-arrow" class="arrow collapsed">▼</span>
             </div>
-            <div id="log-container" class="log-container">
+            <div id="log-container" class="log-container collapsed">
                 <div id="log-content" class="log-content"></div>
             </div>
         </section>
@@ -113,6 +119,9 @@
             </div>
         </div>
     </div>
+
+    <!-- リサイズグリップ -->
+    <div class="resize-grip" id="resize-grip" title="ドラッグしてリサイズ">⠿</div>
 
     <script src="main.js"></script>
     <script src="settings.js"></script>

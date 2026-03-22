@@ -328,6 +328,13 @@ function rig:read_swr()         ... end   -- SWRメーター読み取り
 function rig:encoder_up(main, step)   ... end
 function rig:encoder_down(main, step) ... end
 
+-- オプション: エンコーダ・ボタンイベントハンドラ (encoderフィーチャー / ESP32-WROVERのみ)
+-- encoder_id: 0=MAIN(Fine), 1=SUB(Coarse), 2=MODE, 3=BAND
+-- direction: +1 (時計回り) または -1 (反時計回り), steps: 集約ステップ数 (1-99)
+function rig.on_encoder(self, encoder_id, direction, steps) ... end
+-- button_id: 0=メインボタン, press_ms: 押下時間 (ミリ秒)
+function rig.on_button(self, button_id, press_ms)           ... end
+
 -- オプション: カスタムUIアクション
 rig.actions = {
     start_atu = {
@@ -356,16 +363,25 @@ return rig
 | `rig_control:assert_key(bool)` | CWキーのアサート/デアサート (DTR/RTS) |
 | `rig_control:assert_atu(bool)` | ATUトリガーピンのアサート/デアサート |
 | `log_info(msg)` | サーバーコンソールにログ出力 |
+| `log_trace(msg)` | トレースレベルのログ出力 (詳細) |
 | `sleep_ms(ms)` | 指定ミリ秒スリープ |
+
+**エンコーダ・ボタンコールバック** (ESP32-WROVER `encoder`フィーチャーのみ):
+
+| コールバック | 説明 |
+|-------------|------|
+| `rig.on_encoder(self, encoder_id, direction, steps)` | エンコーダ回転時に呼ばれる。`encoder_id`: 0=MAIN, 1=SUB, 2=MODE, 3=BAND。`direction`: +1 (CW) / -1 (CCW)。`steps`: 集約ステップ数 (1–99)。 |
+| `rig.on_button(self, button_id, press_ms)` | ボタン離し時に呼ばれる。`button_id`: 0=メインボタン。`press_ms`: 押下時間(ms)。短押し/長押しの分岐に使用。 |
 
 **サンドボックス**: `table`, `string`, `math`, `coroutine` 標準ライブラリのみ利用可能。`io`, `os`, `debug` へのアクセスは無効化されています。
 
 #### 同梱スクリプト
 
-| スクリプト | 対応無線機 | プロトコル | ボーレート |
-|-----------|-----------|-----------|-----------|
-| `yaesu_ft891.lua` | Yaesu FT-891 | Yaesu CAT (ASCII, `;` 区切り) | 4800 |
-| `icom_template.lua` | ICOM (テンプレート) | CI-V (`FE FE` フレーム, BCD周波数) | 9600 |
+| スクリプト | 対応無線機 | プロトコル | ボーレート | エンコーダ |
+|-----------|-----------|-----------|-----------|-----------|
+| `ftdx10.lua` | Yaesu FTDX10 | Yaesu CAT (ASCII, `;` 区切り) | 38400 | 対応 (4軸+ボタン) |
+| `yaesu_ft891.lua` | Yaesu FT-891 | Yaesu CAT (ASCII, `;` 区切り) | 4800 | なし |
+| `icom_template.lua` | ICOM (テンプレート) | CI-V (`FE FE` フレーム, BCD周波数) | 9600 | なし |
 
 新しい無線機に対応するには、既存のスクリプトをコピーしてプロトコル固有のコマンドを実装してください。
 
@@ -489,12 +505,17 @@ PCやスマートフォンのブラウザから設定できます。
 3. **設定画面を開く**
    - ブラウザで `http://192.168.71.1` にアクセス
 
-4. **プロファイルを追加**
+4. **WiFiプロファイルを追加** (Profilesタブ)
    - WiFi SSID / パスワード
    - サーバー名 / パスワード
    - 「Add Profile」をクリック
 
-5. **再起動**
+5. **GPIO設定** (GPIOタブ、任意)
+   - キーGPIO、ボタンGPIO、LEDのGPIOピン番号
+   - エンコーダAフェーズ/Bフェーズピン ×4 および Aフェーズ反転フラグ (ESP32-WROVERのみ表示)
+   - 変更は再起動後に有効
+
+6. **再起動**
    - 「Save & Restart」をクリック
    - ESP32が再起動し、設定したWiFiに接続
 
@@ -668,6 +689,25 @@ AT+GPIO=19,39,27  # GPIO設定変更
 - **KEY_GPIO**: クライアントモードではパドル/ストレートキー入力 (内部プルアップ)、サーバーモードではキーイング出力 (フォトカプラへ)
 - **BUTTON**: ATU起動 / APモード切替ボタン (内部プルアップ)
 - **LED**: 状態表示LED
+
+##### エンコーダGPIO (ESP32-WROVERのみ、`board_esp32_wrover` / `encoder`フィーチャー)
+
+| エンコーダ | encoder_id | Aフェーズ | Bフェーズ | A相反転 | ラッチモード |
+|-----------|-----------|----------|----------|--------|------------|
+| MAIN (Fine VFO) | 0 | GPIO35 | GPIO34 | あり | Two03 |
+| SUB (Coarse VFO) | 1 | GPIO32 | GPIO33 | なし | Four3 |
+| MODE | 2 | GPIO25 | GPIO26 | なし | Four3 |
+| BAND | 3 | GPIO14 | GPIO27 | あり | Two03 |
+
+> GPIO35・GPIO34は入力専用ピン（内部プルアップ不可）。その他のエンコーダピンは内部プルアップを使用。
+>
+> **ラッチモード** — Two03: ステート0・3でラッチ（1回転2パルス、高解像度）。Four3: ステート3のみラッチ（1回転1パルス、クリック付きエンコーダ向け）。
+>
+> **Aフェーズ反転** (`enc_a_inv`) — そのエンコーダの回転方向を反転させます。エンコーダの回転方向が期待と逆の場合は 1 に設定してください。
+
+**`encoder_id` の対応関係**: Luaの `rig.on_encoder` に渡される `encoder_id` は `enc_a`/`enc_b` ピンリストの**配列インデックス** (0〜3) です。Web設定画面でGPIOピン番号を変更しても `encoder_id` の番号は変わりません。物理配線のみが変わります。
+
+GPIO設定はフラッシュ後にWeb設定画面 (`http://192.168.71.1`、GPIOタブ) から変更可能です。
 
 #### 回路構成
 

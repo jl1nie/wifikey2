@@ -215,6 +215,9 @@ rig.actions = {
                 sleep_ms(100)
             end
 
+            -- ATU がチューニング結果をラッチするまで待つ（SWR 収束後も内部処理が続く）
+            sleep_ms(2000)
+
             ctl:assert_key(false)
             sleep_ms(500)
             self:set_mode(saved_mode)

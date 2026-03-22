@@ -42,7 +42,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use log::LevelFilter;
-use log::{error, info, warn};
+use log::{error, info, trace, warn};
 use mqttstunclient::MQTTStunClient;
 #[cfg(feature = "server")]
 use wksocket::{challenge, WkListener, WkReceiver};
@@ -473,28 +473,52 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
     let blue_color = std::iter::repeat(RGB8 { r: 0, g: 0, b: 5 }).take(1);
 
     // エンコーダー初期化 (GPIO設定から読み込み)
+    // ../WiFiKey の pinMode(pin, INPUT_PULLUP) に相当:
+    //   MAIN(enc[0]): GPIO34/35は入力専用でプルアップ不可 → set_pull失敗は無視
+    //   SUB/MODE/BAND(enc[1..3]): INPUT_PULLUP に相当 → set_pull(Up)
     #[cfg(feature = "encoder")]
-    let enc_a = [
-        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[0] as i32) })?,
-        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[1] as i32) })?,
-        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[2] as i32) })?,
-        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[3] as i32) })?,
-    ];
+    let enc_a = {
+        let mut pins = [
+            PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[0] as i32) })?,
+            PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[1] as i32) })?,
+            PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[2] as i32) })?,
+            PinDriver::input(unsafe { pin_from_num(gpio_config.enc_a[3] as i32) })?,
+        ];
+        // enc[0](MAIN) はプルアップなし (GPIO34/35はプルアップ非対応のため失敗しても続行)
+        pins[0].set_pull(Pull::Up).ok();
+        // enc[1..3](SUB/MODE/BAND) は INPUT_PULLUP
+        pins[1].set_pull(Pull::Up).unwrap();
+        pins[2].set_pull(Pull::Up).unwrap();
+        pins[3].set_pull(Pull::Up).unwrap();
+        pins
+    };
     #[cfg(feature = "encoder")]
-    let enc_b = [
-        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[0] as i32) })?,
-        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[1] as i32) })?,
-        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[2] as i32) })?,
-        PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[3] as i32) })?,
-    ];
+    let enc_b = {
+        let mut pins = [
+            PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[0] as i32) })?,
+            PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[1] as i32) })?,
+            PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[2] as i32) })?,
+            PinDriver::input(unsafe { pin_from_num(gpio_config.enc_b[3] as i32) })?,
+        ];
+        pins[0].set_pull(Pull::Up).ok();
+        pins[1].set_pull(Pull::Up).unwrap();
+        pins[2].set_pull(Pull::Up).unwrap();
+        pins[3].set_pull(Pull::Up).unwrap();
+        pins
+    };
     #[cfg(feature = "encoder")]
     let enc_a_inv: [bool; 4] = gpio_config.enc_a_inv.map(|v| v != 0);
     #[cfg(feature = "encoder")]
     let mut decoders = [
-        encoder::QuadratureDecoder::new(), // MAIN
-        encoder::QuadratureDecoder::new(), // SUB
-        encoder::QuadratureDecoder::new(), // MODE
-        encoder::QuadratureDecoder::new(), // BAND
+        // ../WiFiKey と同じラッチモード:
+        //   MAIN: TWO03 (state 0 and 3), INPUT (プルアップなし)
+        //   SUB:  FOUR3 (state 3 only),  INPUT_PULLUP
+        //   MODE: FOUR3 (state 3 only),  INPUT_PULLUP
+        //   BAND: TWO03 (state 0 and 3), INPUT_PULLUP
+        encoder::QuadratureDecoder::new(encoder::LatchMode::Two03), // MAIN
+        encoder::QuadratureDecoder::new(encoder::LatchMode::Four3), // SUB
+        encoder::QuadratureDecoder::new(encoder::LatchMode::Four3), // MODE
+        encoder::QuadratureDecoder::new(encoder::LatchMode::Two03), // BAND
     ];
 
     loop {
@@ -743,15 +767,8 @@ fn run_keying_loop<K: InputPin, B: InputPin>(
                     let a = enc_a[i].is_high() ^ enc_a_inv[i];
                     let b = enc_b[i].is_high();
                     if let Some(dir) = decoders[i].tick(a, b, now) {
-                        let steps = if i == 0 {
-                            // MAIN: 速度に応じてステップ数を増やす
-                            encoder::QuadratureDecoder::velocity_multiplier(
-                                decoders[0].last_interval_ms,
-                            )
-                        } else {
-                            1
-                        };
-                        info!("Encoder[{}] dir={} steps={}", i, dir, steps);
+                        let steps = 1u8;
+                        trace!("Encoder[{}] dir={} steps={}", i, dir, steps);
                         if sender
                             .send(MessageSND::EncoderEvent {
                                 encoder_id: i as u8,

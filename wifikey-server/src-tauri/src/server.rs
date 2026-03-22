@@ -393,4 +393,23 @@ impl WifiKeyServer {
     pub fn run_rig_action(&self, name: &str) -> anyhow::Result<()> {
         self.rigcontrol.run_action(name)
     }
+
+    /// 緊急停止: キー/ATU 解除 + Lua ブロック + セッション切断
+    pub fn emergency_stop(&self) {
+        self.rigcontrol.emergency_stop();
+        if let Ok(mut guard) = self.active_session.lock() {
+            if let Some(session) = guard.take() {
+                let _ = session.close();
+            }
+        }
+    }
+
+    /// 緊急停止を解除
+    pub fn reset_stop(&self) {
+        self.rigcontrol.reset_stop();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        self.rigcontrol.is_stopped()
+    }
 }

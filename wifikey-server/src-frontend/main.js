@@ -10,13 +10,15 @@ const wpmValue = document.getElementById('wpm-value');
 const pktValue = document.getElementById('pkt-value');
 const rttValue = document.getElementById('rtt-value');
 const atuBtn = document.getElementById('atu-btn');
+const killBtn = document.getElementById('kill-btn');
+const killBanner = document.getElementById('kill-banner');
 const logToggle = document.getElementById('log-toggle');
 const logArrow = document.getElementById('log-arrow');
 const logContainer = document.getElementById('log-container');
 const logContent = document.getElementById('log-content');
 
 // State
-let isLogCollapsed = false;
+let isLogCollapsed = true;
 let updateInterval = null;
 let rigActions = []; // [{name, label}]
 
@@ -27,14 +29,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
 async function initializeApp() {
     setupEventListeners();
-    await loadRigActions();
+    await loadRigActions();  // 内部で resizeWindow() を呼ぶ
     startStatsUpdate();
     setupLogListener();
     console.log('WiFiKey2 initialized');
 }
 
+// Expose for settings.js to call after config save
+window.loadRigActions = loadRigActions;
+
 function setupEventListeners() {
     logToggle.addEventListener('click', toggleLog);
+
+    if (killBtn) {
+        killBtn.addEventListener('click', handleKillSwitch);
+    }
 
     const esp32Btn = document.getElementById('esp32-btn');
     if (esp32Btn) {
@@ -43,6 +52,26 @@ function setupEventListeners() {
                 window.openEsp32Modal();
             }
         });
+    }
+}
+
+// Kill switch: STOP → 緊急停止、RESUME → 解除
+async function handleKillSwitch() {
+    if (!killBtn) return;
+    const isStopped = killBtn.classList.contains('stopped');
+    try {
+        killBtn.disabled = true;
+        if (isStopped) {
+            await invoke('reset_emergency_stop');
+            addLogEntry('Emergency stop cleared — resuming normal operation', 'info');
+        } else {
+            await invoke('emergency_stop');
+            addLogEntry('EMERGENCY STOP activated', 'error');
+        }
+    } catch (error) {
+        addLogEntry(`Kill switch error: ${error}`, 'error');
+    } finally {
+        killBtn.disabled = false;
     }
 }
 
@@ -72,6 +101,8 @@ async function loadRigActions() {
         // Fallback: keep the default ATU button
         atuBtn.addEventListener('click', handleStartATU);
     }
+    // ボタン数に合わせてウィンドウサイズを更新
+    await resizeWindow();
 }
 
 // Run a named action
@@ -111,6 +142,19 @@ async function updateStats() {
             appTitle.classList.remove('active');
         }
 
+        // 緊急停止状態を反映
+        if (killBtn && killBanner) {
+            if (stats.emergency_stopped) {
+                killBtn.textContent = 'RESUME';
+                killBtn.classList.add('stopped');
+                killBanner.style.display = '';
+            } else {
+                killBtn.textContent = 'STOP';
+                killBtn.classList.remove('stopped');
+                killBanner.style.display = 'none';
+            }
+        }
+
         if (rigActions.length === 0) {
             // Fallback ATU button
             if (stats.atu_active) {
@@ -139,6 +183,27 @@ async function handleStartATU() {
     }
 }
 
+// Window auto-resize to fit content
+// JS window API の権限問題を回避するため Rust コマンド経由でリサイズする
+async function resizeWindow() {
+    try {
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        // html/body に height 制約があっても正確に計測できるよう一時的に解除
+        const tmpStyle = document.createElement('style');
+        tmpStyle.textContent = 'html, body { height: auto !important; overflow: visible !important; min-height: 0 !important; }';
+        document.head.appendChild(tmpStyle);
+        await new Promise(r => requestAnimationFrame(r));
+        const h = document.documentElement.scrollHeight;
+        tmpStyle.remove();
+
+        // Rust コマンド経由でリサイズ（JS window API 権限不要）
+        await invoke('resize_to_content', { height: h });
+    } catch (e) {
+        console.error('resizeWindow failed:', e);
+    }
+}
+
 // Log functions
 function toggleLog() {
     isLogCollapsed = !isLogCollapsed;
@@ -149,6 +214,8 @@ function toggleLog() {
         logContainer.classList.remove('collapsed');
         logArrow.classList.remove('collapsed');
     }
+    // CSS transition (0.25s) 完了後にリサイズ
+    setTimeout(resizeWindow, 280);
 }
 
 function addLogEntry(message, level = 'info') {
@@ -176,6 +243,20 @@ function setupLogListener() {
             addLogEntry(message, logLevel);
         });
     }
+}
+
+// リサイズグリップ: 右下コーナーからリサイズ
+const resizeGrip = document.getElementById('resize-grip');
+if (resizeGrip) {
+    resizeGrip.addEventListener('mousedown', async (e) => {
+        e.preventDefault();
+        try {
+            const { Window } = window.__TAURI__.window;
+            await Window.getCurrent().startResizeDragging('SouthEast');
+        } catch (err) {
+            console.warn('startResizeDragging:', err);
+        }
+    });
 }
 
 window.addEventListener('beforeunload', () => {

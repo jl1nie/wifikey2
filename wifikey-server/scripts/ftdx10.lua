@@ -3,10 +3,10 @@
 -- (FTDX10 メニュー: MENU > CAT > CAT RATE を 38400bps に設定すること)
 --
 -- エンコーダーID:
---   0 = MAIN (VFO-A 微調整)
---   1 = SUB  (VFO-B / 粗調整)
---   2 = MODE (モード切替)
---   3 = BAND (バンド切替)
+--   0 = Fine   (100Hz/step)
+--   1 = Coarse (1kHz/step = 100Hz * 10)
+--   2 = MODE   (モード切替)
+--   3 = BAND   (バンド切替)
 --
 -- ボタン (button_id=0):
 --   < 500ms      → RIT トグル (RT;)
@@ -28,6 +28,7 @@ local MODES = {"LSB", "USB", "CW", "FM", "AM", "RTTY-L", "CW-R"}
 
 -- 現在のモードキャッシュ（get_mode()のシリアル読み取りを省くため）
 local cached_mode = nil
+
 
 
 -- モードコード (MD0x;) → モード文字列
@@ -57,18 +58,19 @@ end
 
 --- CAT コマンド送信 (応答なし)
 local function cat_write(self, command)
-    log_info("[CAT TX] '" .. command .. "'")
+    log_trace("[CAT TX] '" .. command .. "'")
     self.port:write(command)
 end
 
 --- CAT コマンド送信 → 応答受信 (FT891と同じパターン)
 --- バッファクリア → コマンド送信 → ";" まで読み取り → プレフィックス確認
 local function cat_read(self, command)
-    log_info("[CAT RX] cmd='" .. command .. "'")
+    log_trace("[CAT RX] cmd='" .. command .. "'")
     self.port:clear_input()
     self.port:write(command)
+    self.port:flush()  -- TX スレッドが送信完了するまで待ってから読む
     local buf = self.port:read_until(";", 500)
-    log_info("[CAT RX] resp='" .. buf .. "' hex=" .. hex_str(buf))
+    log_trace("[CAT RX] resp='" .. buf .. "' hex=" .. hex_str(buf))
     local prefix = command:sub(1, 2)
     local idx = buf:find(prefix, 1, true)
     if not idx then
@@ -76,7 +78,7 @@ local function cat_read(self, command)
         error("cat read error: prefix '" .. prefix .. "' not found in buffer '" .. buf .. "'")
     end
     local res = buf:sub(idx)
-    log_info("[CAT RX] parsed='" .. res .. "'")
+    log_trace("[CAT RX] parsed='" .. res .. "'")
     return res
 end
 
@@ -130,11 +132,25 @@ function rig:read_swr()
     return swr
 end
 
+-- ========== 初期化 ==========
+
+--- 起動時に1回呼ばれる（モードキャッシュを事前取得）
+function rig:on_init()
+    local ok, m = pcall(function() return self:get_mode() end)
+    if ok then
+        cached_mode = m
+        log_info("[init] mode cached: " .. m)
+    else
+        cached_mode = "USB"
+        log_info("[init] get_mode failed, defaulting to USB: " .. tostring(m))
+    end
+end
+
 -- ========== エンコーダーイベント ==========
 
 function rig.on_encoder(self, encoder_id, direction, steps)
     if encoder_id == 0 then
-        -- MAIN: VFO-A 微調整 (EU0XX; / ED0XX;  XX=01-99)
+        -- Fine: 100Hz/step (velocity multiplier適用済み)
         if direction > 0 then
             cat_write(self, string.format("EU0%02d;", steps))
         else
@@ -142,19 +158,17 @@ function rig.on_encoder(self, encoder_id, direction, steps)
         end
 
     elseif encoder_id == 1 then
-        -- SUB: VFO-B 操作 (EU1XX; / ED1XX;)
+        -- Coarse: 1kHz/step (steps*10 で渡す)
+        -- EU1/ED1 は VFO-B エンコーダーで方向が逆なので direction を反転
+        local coarse_steps = math.min(steps * 10, 99)
         if direction > 0 then
-            cat_write(self, string.format("EU1%02d;", steps))
+            cat_write(self, string.format("ED1%02d;", coarse_steps))
         else
-            cat_write(self, string.format("ED1%02d;", steps))
+            cat_write(self, string.format("EU1%02d;", coarse_steps))
         end
 
     elseif encoder_id == 2 then
-        -- MODE: 循環切替（初回のみget_mode、以降はキャッシュ使用）
-        if not cached_mode then
-            local ok, m = pcall(function() return self:get_mode() end)
-            cached_mode = ok and m or "USB"
-        end
+        -- MODE: 循環切替（cached_modeはon_initで初期化済み）
         local idx = 1
         for i, m in ipairs(MODES) do
             if m == cached_mode then idx = i; break end
@@ -244,6 +258,9 @@ rig.actions = {
                 end
             end)
 
+            -- ATU がチューニング結果をラッチするまで待つ（SWR 収束後も内部処理が続く）
+            sleep_ms(2000)
+
             log_info("[ATU] 5/6 Key OFF")
             ctl:assert_key(false)
 
@@ -261,22 +278,22 @@ rig.actions = {
         end,
     },
 
-    -- VFO-A 操作
-    vfoa_up = {
-        label = "VFO-A ▲",
+    -- Fine 操作 (100Hz/step)
+    fine_up = {
+        label = "Fine ▲",
         fn = function(self, _ctl) self:on_encoder(0,  1, 1) end,
     },
-    vfoa_down = {
-        label = "VFO-A ▼",
+    fine_down = {
+        label = "Fine ▼",
         fn = function(self, _ctl) self:on_encoder(0, -1, 1) end,
     },
-    -- VFO-B 操作
-    vfob_up = {
-        label = "VFO-B ▲",
+    -- Coarse 操作 (1kHz/step)
+    coarse_up = {
+        label = "Coarse ▲",
         fn = function(self, _ctl) self:on_encoder(1,  1, 1) end,
     },
-    vfob_down = {
-        label = "VFO-B ▼",
+    coarse_down = {
+        label = "Coarse ▼",
         fn = function(self, _ctl) self:on_encoder(1, -1, 1) end,
     },
     -- モード切替

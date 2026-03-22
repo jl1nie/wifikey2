@@ -47,28 +47,28 @@ end
 
 -- CAT コマンド書き込み
 local function cat_write(self, command)
-    log_info("[CAT TX] command='" .. command .. "' hex=" .. hex_str(command))
+    log_trace("[CAT TX] command='" .. command .. "' hex=" .. hex_str(command))
     local n = self.port:write(command)
-    log_info("[CAT TX] wrote " .. n .. " bytes")
+    log_trace("[CAT TX] wrote " .. n .. " bytes")
 end
 
 -- CAT コマンド読み取り（コマンド送信→応答受信）
 local function cat_read(self, command)
-    log_info("[CAT RX] sending command='" .. command .. "'")
+    log_trace("[CAT RX] sending command='" .. command .. "'")
     self.port:clear_input()
     local n = self.port:write(command)
-    log_info("[CAT RX] wrote " .. n .. " bytes, reading response...")
+    self.port:flush()  -- TX スレッドが送信完了するまで待ってから読む
+    log_trace("[CAT RX] wrote " .. n .. " bytes, reading response...")
     local buf = self.port:read_until(";", 500)
-    log_info("[CAT RX] raw response: len=" .. #buf .. " hex=" .. hex_str(buf) .. " ascii='" .. buf .. "'")
+    log_trace("[CAT RX] raw response: len=" .. #buf .. " hex=" .. hex_str(buf) .. " ascii='" .. buf .. "'")
     local prefix = command:sub(1, 2)
-    log_info("[CAT RX] looking for prefix='" .. prefix .. "'")
     local idx = buf:find(prefix, 1, true)
     if not idx then
         log_info("[CAT RX] ERROR: prefix not found in response!")
         error("cat read error: prefix '" .. prefix .. "' not found in buffer (len=" .. #buf .. " hex=" .. hex_str(buf) .. ")")
     end
     local res = buf:sub(idx)
-    log_info("[CAT RX] parsed response='" .. res .. "' (from pos " .. idx .. ")")
+    log_trace("[CAT RX] parsed response='" .. res .. "' (from pos " .. idx .. ")")
     return res
 end
 
@@ -227,6 +227,9 @@ rig.actions = {
                     sleep_ms(100)
                 end
             end)
+
+            -- ATU がチューニング結果をラッチするまで待つ（SWR 収束後も内部処理が続く）
+            sleep_ms(2000)
 
             log_info("[ATU] 5/6 Key OFF")
             ctl:assert_key(false)

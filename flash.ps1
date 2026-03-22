@@ -5,7 +5,7 @@ param(
     [ValidateSet("m5atom_lite", "esp32_wrover")]
     [string]$Board = "m5atom_lite",
 
-    [string]$Port = "",
+    [string]$Port = "",  # 省略時は利用可能なCOMポートを自動検出
 
     [switch]$Release,
 
@@ -15,6 +15,24 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# COMポートを解決する: 指定があればそのまま、なければ利用可能なポートを自動検出
+function Resolve-ComPort([string]$specified) {
+    if ($specified -ne "") { return $specified }
+    $ports = @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object)
+    if ($ports.Count -eq 0) {
+        Write-Host "[ERROR] No COM ports found. Connect ESP32 and retry, or specify -Port COMx" -ForegroundColor Red
+        exit 1
+    }
+    if ($ports.Count -eq 1) {
+        Write-Host "  Auto-detected port: $($ports[0])" -ForegroundColor DarkGray
+        return $ports[0]
+    }
+    # 複数ある場合は最後（最近接続されたもの）を使用
+    $selected = $ports[-1]
+    Write-Host "  Multiple COM ports found: $($ports -join ', ') — using $selected (specify -Port to override)" -ForegroundColor Yellow
+    return $selected
+}
 
 $mode = if ($Server) { "server" } else { "client" }
 Write-Host "=== wifikey2 build & flash ($mode) ===" -ForegroundColor Cyan
@@ -51,7 +69,7 @@ if ($MonitorOnly) {
     Write-Host ""
     Write-Host "--- Opening serial monitor ---" -ForegroundColor Cyan
     $monitorPython = "C:\.embuild\espressif\python_env\idf5.2_py3.13_env\Scripts\python.exe"
-    $monitorPort = if ($Port -ne "") { $Port } else { "COM4" }
+    $monitorPort = Resolve-ComPort $Port
     & $monitorPython -m serial.tools.miniterm $monitorPort 115200
     exit 0
 }
@@ -204,11 +222,8 @@ $nvsBytes = [System.IO.File]::ReadAllBytes($nvsBin)
 Write-Host "[OK] NVS patched at offset 0x9000." -ForegroundColor Green
 
 Write-Host "--- Flashing firmware + NVS ---" -ForegroundColor Cyan
-$esptoolPortArgs = @()
-if ($Port -ne "") {
-    $esptoolPortArgs = @("--port", $Port)
-}
-& $pythonExe -m esptool @esptoolPortArgs --chip esp32 write_flash 0x0 $firmwareBin
+$flashPort = Resolve-ComPort $Port
+& $pythonExe -m esptool --port $flashPort --chip esp32 write_flash 0x0 $firmwareBin
 if ($LASTEXITCODE -ne 0) {
     Write-Host "[ERROR] Flash failed." -ForegroundColor Red
     exit 1
@@ -218,5 +233,5 @@ Write-Host ""
 
 # Monitor
 Write-Host "--- Opening serial monitor ---" -ForegroundColor Cyan
-$monitorPort = if ($Port -ne "") { $Port } else { "COM4" }
+$monitorPort = Resolve-ComPort $Port
 & $pythonExe -m serial.tools.miniterm $monitorPort 115200

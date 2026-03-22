@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
@@ -23,28 +24,77 @@ impl Drop for ReaderHandle {
     }
 }
 
+/// TX スレッドへのメッセージ
+enum TxMsg {
+    /// データ送信: write_all + flush を TX スレッドで実行
+    Data(Vec<u8>),
+    /// 同期バリア: pending な Data がすべて送信完了してから ACK を返す
+    Sync(mpsc::SyncSender<()>),
+}
+
 /// Lua-accessible serial port wrapper with background read buffering
 ///
-/// バックグラウンドスレッドがシリアルポートから常時読み取り、
-/// VecDequeバッファに蓄積する。Luaはバッファから読み取る。
+/// TX は専用スレッドが担当するため write() は即リターン（エンコーダをブロックしない）。
+/// flush() は TX スレッドが処理済みになるまで待つバリア（cat_read 前に使用）。
 #[derive(Clone)]
 struct LuaSerialPort {
-    write_port: Arc<Mutex<Box<dyn SerialPort>>>,
+    tx: mpsc::Sender<TxMsg>,
     buffer: Arc<Mutex<VecDeque<u8>>>,
     #[allow(dead_code)]
     stop: Arc<AtomicBool>,
 }
 
 impl LuaSerialPort {
-    /// シリアルポートをラップし、バックグラウンドリーダーを起動する
+    /// シリアルポートをラップし、TX スレッドと BG リーダースレッドを起動する
     fn new(port: Box<dyn SerialPort>) -> Result<(Self, ReaderHandle)> {
         let mut read_port = port
             .try_clone()
             .context("failed to clone serial port for background reader")?;
-        // BGスレッドの読み取りタイムアウトを短くする（応答性のため）
         let _ = read_port.set_timeout(Duration::from_millis(50));
 
-        let write_port = Arc::new(Mutex::new(port));
+        // TX 専用スレッド: write_all + flush を担当。エンコーダスレッドをブロックしない。
+        let (tx, tx_rx) = mpsc::channel::<TxMsg>();
+        let mut write_port = port;
+        std::thread::spawn(move || {
+            while let Ok(msg) = tx_rx.recv() {
+                match msg {
+                    TxMsg::Data(bytes) => {
+                        if let Err(e) = write_port.write_all(&bytes) {
+                            warn!("[serial TX ERROR] write_all: {}", e);
+                        } else {
+                            // 追加で待機中のメッセージをドレイン
+                            loop {
+                                match tx_rx.try_recv() {
+                                    Ok(TxMsg::Data(more)) => {
+                                        if let Err(e) = write_port.write_all(&more) {
+                                            warn!("[serial TX ERROR] write_all: {}", e);
+                                            break;
+                                        }
+                                    }
+                                    Ok(TxMsg::Sync(reply)) => {
+                                        // Data ドレイン中に Sync が来た場合も正しく処理する
+                                        if let Err(e) = write_port.flush() {
+                                            warn!("[serial TX ERROR] flush: {}", e);
+                                        }
+                                        let _ = reply.send(());
+                                        break;
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                    }
+                    TxMsg::Sync(reply) => {
+                        // cat_read の前に呼ばれる: 送信バッファをフラッシュしてから ACK を返す
+                        if let Err(e) = write_port.flush() {
+                            warn!("[serial TX ERROR] flush: {}", e);
+                        }
+                        let _ = reply.send(());
+                    }
+                }
+            }
+        });
+
         let buffer = Arc::new(Mutex::new(VecDeque::with_capacity(SERIAL_BUFFER_SIZE)));
         let stop = Arc::new(AtomicBool::new(false));
         let reader_handle = ReaderHandle { stop: stop.clone() };
@@ -70,22 +120,15 @@ impl LuaSerialPort {
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
                     Err(e) => {
-                        info!("[serial BG] read error: {}", e);
+                        warn!("[serial BG] read error: {}", e);
                         break;
                     }
                 }
             }
-            info!("[serial BG] background reader stopped");
+            warn!("[serial BG] background reader stopped");
         });
 
-        Ok((
-            LuaSerialPort {
-                write_port,
-                buffer,
-                stop,
-            },
-            reader_handle,
-        ))
+        Ok((LuaSerialPort { tx, buffer, stop }, reader_handle))
     }
 }
 
@@ -150,25 +193,28 @@ fn hex_dump(data: &[u8]) -> String {
 
 impl LuaUserData for LuaSerialPort {
     fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
-        // port:write(data) -> bytes_written
+        // port:write(data) -> bytes_written  ※ TX スレッドに enqueue して即リターン
         methods.add_method("write", |_, this, data: LuaString| {
-            let mut port = this
-                .write_port
-                .lock()
-                .map_err(|e| LuaError::RuntimeError(format!("write port lock failed: {}", e)))?;
-            let bytes = data.as_bytes();
-            info!("[serial TX] {} bytes: {}", bytes.len(), hex_dump(&bytes));
-            port.write_all(&bytes).map_err(|e| {
-                info!("[serial TX ERROR] write_all: {}", e);
-                LuaError::external(e)
-            })?;
-            port.flush().map_err(|e| {
-                info!("[serial TX ERROR] flush: {}", e);
-                LuaError::external(e)
-            })?;
+            let bytes = data.as_bytes().to_vec();
             let n = bytes.len();
-            info!("[serial TX] wrote {} bytes", n);
+            trace!("[serial TX] {} bytes: {}", n, hex_dump(&bytes));
+            this.tx.send(TxMsg::Data(bytes)).map_err(|e| {
+                warn!("[serial TX ERROR] send: {}", e);
+                LuaError::RuntimeError(format!("TX channel closed: {}", e))
+            })?;
             Ok(n)
+        });
+
+        // port:flush()  ※ pending な write がすべて送信完了するまで待つ（cat_read 前に使用）
+        methods.add_method("flush", |_, this, ()| {
+            let (reply_tx, reply_rx) = mpsc::sync_channel(0);
+            this.tx.send(TxMsg::Sync(reply_tx)).map_err(|e| {
+                LuaError::RuntimeError(format!("TX channel closed: {}", e))
+            })?;
+            reply_rx.recv().map_err(|e| {
+                LuaError::RuntimeError(format!("flush sync failed: {}", e))
+            })?;
+            Ok(())
         });
 
         // port:read(max_bytes, timeout_ms) -> string
@@ -178,7 +224,7 @@ impl LuaUserData for LuaSerialPort {
             |lua, this, (max_bytes, timeout_ms): (usize, u64)| {
                 let deadline = Instant::now() + Duration::from_millis(timeout_ms);
                 let mut result = Vec::new();
-                info!(
+                trace!(
                     "[serial RX] read up to {} bytes, timeout={}ms",
                     max_bytes, timeout_ms
                 );
@@ -201,7 +247,7 @@ impl LuaUserData for LuaSerialPort {
                         sleep(Duration::from_millis(5));
                     }
                 }
-                info!(
+                trace!(
                     "[serial RX] total {} bytes: {}",
                     result.len(),
                     hex_dump(&result)
@@ -223,7 +269,7 @@ impl LuaUserData for LuaSerialPort {
                 }
                 let deadline = Instant::now() + Duration::from_millis(timeout_ms);
                 let mut result = Vec::new();
-                info!(
+                trace!(
                     "[serial RX] read_until delim={} timeout={}ms",
                     hex_dump(&delim),
                     timeout_ms
@@ -238,7 +284,7 @@ impl LuaUserData for LuaSerialPort {
                             if result.len() >= delim.len()
                                 && result[result.len() - delim.len()..] == delim[..]
                             {
-                                info!(
+                                trace!(
                                     "[serial RX] read_until found delimiter, {} bytes: {}",
                                     result.len(),
                                     hex_dump(&result)
@@ -252,7 +298,7 @@ impl LuaUserData for LuaSerialPort {
                     }
                     sleep(Duration::from_millis(1));
                 }
-                info!(
+                warn!(
                     "[serial RX] read_until timeout, {} bytes: {}",
                     result.len(),
                     hex_dump(&result)
@@ -264,7 +310,7 @@ impl LuaUserData for LuaSerialPort {
         // port:clear_input()
         // BGバッファをクリアする（OSバッファのPurgeCommはTX中にブロックするため除去）
         methods.add_method("clear_input", |_, this, ()| {
-            info!("[serial] clear_input");
+            trace!("[serial] clear_input");
             {
                 let mut ring = this
                     .buffer
@@ -538,6 +584,17 @@ impl RigControl {
             .set("log_info", log_info)
             .map_err(|e| anyhow::anyhow!("Failed to set log_info: {}", e))?;
 
+        // グローバル関数: log_trace(msg) — trace レベル（頻繁なCAT TX/RX等に使用）
+        let log_trace = lua
+            .create_function(|_, msg: String| {
+                trace!("[lua] {}", msg);
+                Ok(())
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to create log_trace: {}", e))?;
+        lua.globals()
+            .set("log_trace", log_trace)
+            .map_err(|e| anyhow::anyhow!("Failed to set log_trace: {}", e))?;
+
         // グローバル関数: sleep_ms(ms)
         let sleep_ms = lua
             .create_function(|_, ms: u64| {
@@ -610,8 +667,17 @@ impl RigControl {
             .map_err(|e| anyhow::anyhow!("Failed to set port on rig table: {}", e))?;
 
         let rig_key = lua
-            .create_registry_value(rig_table)
+            .create_registry_value(rig_table.clone())
             .map_err(|e| anyhow::anyhow!("Failed to store rig table in registry: {}", e))?;
+
+        // on_init が定義されていれば起動時に1回呼び出す（状態の初期化に使用）
+        if let Ok(func) = rig_table.get::<LuaFunction>("on_init") {
+            if let Err(e) = func.call::<()>(rig_table) {
+                warn!("[lua] on_init() failed: {}", e);
+            } else {
+                info!("[lua] on_init() completed");
+            }
+        }
 
         Ok(LuaState {
             lua,
@@ -654,9 +720,9 @@ impl RigControl {
         if self.emergency_stop.load(Ordering::Relaxed) {
             bail!("emergency stop is active")
         }
-        info!("[lua call] {}()", func_name);
+        trace!("[lua call] {}()", func_name);
         let Some(ref lua_state) = self.lua_state else {
-            info!("[lua call] FAIL: no Lua state");
+            warn!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
         let state = lua_state
@@ -667,14 +733,14 @@ impl RigControl {
             .registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
         let func: LuaFunction = rig_table.get(func_name).map_err(|e| {
-            info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+            warn!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
             anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
         })?;
         let result: T = func.call(rig_table.clone()).map_err(|e| {
-            info!("[lua call] FAIL: {}() error: {}", func_name, e);
+            warn!("[lua call] FAIL: {}() error: {}", func_name, e);
             anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
         })?;
-        info!("[lua call] {}() OK", func_name);
+        trace!("[lua call] {}() OK", func_name);
         Ok(result)
     }
 
@@ -683,9 +749,9 @@ impl RigControl {
         if self.emergency_stop.load(Ordering::Relaxed) {
             bail!("emergency stop is active")
         }
-        info!("[lua call] {}(arg)", func_name);
+        trace!("[lua call] {}(arg)", func_name);
         let Some(ref lua_state) = self.lua_state else {
-            info!("[lua call] FAIL: no Lua state");
+            warn!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
         let state = lua_state
@@ -696,14 +762,14 @@ impl RigControl {
             .registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
         let func: LuaFunction = rig_table.get(func_name).map_err(|e| {
-            info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+            warn!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
             anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
         })?;
         let result: T = func.call((rig_table.clone(), arg)).map_err(|e| {
-            info!("[lua call] FAIL: {}(arg) error: {}", func_name, e);
+            warn!("[lua call] FAIL: {}(arg) error: {}", func_name, e);
             anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
         })?;
-        info!("[lua call] {}(arg) OK", func_name);
+        trace!("[lua call] {}(arg) OK", func_name);
         Ok(result)
     }
 
@@ -717,9 +783,9 @@ impl RigControl {
         if self.emergency_stop.load(Ordering::Relaxed) {
             bail!("emergency stop is active")
         }
-        info!("[lua call] {}(arg1, arg2)", func_name);
+        trace!("[lua call] {}(arg1, arg2)", func_name);
         let Some(ref lua_state) = self.lua_state else {
-            info!("[lua call] FAIL: no Lua state");
+            warn!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
         let state = lua_state
@@ -730,14 +796,14 @@ impl RigControl {
             .registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
         let func: LuaFunction = rig_table.get(func_name).map_err(|e| {
-            info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+            warn!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
             anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
         })?;
         let result: T = func.call((rig_table.clone(), arg1, arg2)).map_err(|e| {
-            info!("[lua call] FAIL: {}(arg1, arg2) error: {}", func_name, e);
+            warn!("[lua call] FAIL: {}(arg1, arg2) error: {}", func_name, e);
             anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
         })?;
-        info!("[lua call] {}(arg1, arg2) OK", func_name);
+        trace!("[lua call] {}(arg1, arg2) OK", func_name);
         Ok(result)
     }
 
@@ -752,9 +818,9 @@ impl RigControl {
         if self.emergency_stop.load(Ordering::Relaxed) {
             bail!("emergency stop is active")
         }
-        info!("[lua call] {}(arg1, arg2, arg3)", func_name);
+        trace!("[lua call] {}(arg1, arg2, arg3)", func_name);
         let Some(ref lua_state) = self.lua_state else {
-            info!("[lua call] FAIL: no Lua state");
+            warn!("[lua call] FAIL: no Lua state");
             bail!("rig control not available (no Lua state)")
         };
         let state = lua_state
@@ -765,14 +831,14 @@ impl RigControl {
             .registry_value(&state.rig_script)
             .map_err(|e| anyhow::anyhow!("Failed to get rig table from registry: {}", e))?;
         let func: LuaFunction = rig_table.get(func_name).map_err(|e| {
-            info!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
+            warn!("[lua call] FAIL: function '{}' not found: {}", func_name, e);
             anyhow::anyhow!("Script missing function '{}': {}", func_name, e)
         })?;
         let result: T = func.call((rig_table.clone(), arg1, arg2, arg3)).map_err(|e| {
-            info!("[lua call] FAIL: {}(arg1, arg2, arg3) error: {}", func_name, e);
+            warn!("[lua call] FAIL: {}(arg1, arg2, arg3) error: {}", func_name, e);
             anyhow::anyhow!("Lua '{}' failed: {}", func_name, e)
         })?;
-        info!("[lua call] {}(arg1, arg2, arg3) OK", func_name);
+        trace!("[lua call] {}(arg1, arg2, arg3) OK", func_name);
         Ok(result)
     }
 

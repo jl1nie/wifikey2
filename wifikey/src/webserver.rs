@@ -141,6 +141,27 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                             <input type="number" id="gpioLed" min="0" max="39" required>
                         </div>
                     </div>
+                    <div id="encoderSection" style="display:none">
+                        <h3 style="margin:12px 0 8px;font-size:1em;color:#00d4ff">Encoder GPIO (MAIN / SUB / MODE / BAND)</h3>
+                        <div class="gpio-row">
+                            <div><label>MAIN A</label><input type="number" id="encA0" min="0" max="39"></div>
+                            <div><label>SUB A</label><input type="number" id="encA1" min="0" max="39"></div>
+                            <div><label>MODE A</label><input type="number" id="encA2" min="0" max="39"></div>
+                            <div><label>BAND A</label><input type="number" id="encA3" min="0" max="39"></div>
+                        </div>
+                        <div class="gpio-row">
+                            <div><label>MAIN B</label><input type="number" id="encB0" min="0" max="39"></div>
+                            <div><label>SUB B</label><input type="number" id="encB1" min="0" max="39"></div>
+                            <div><label>MODE B</label><input type="number" id="encB2" min="0" max="39"></div>
+                            <div><label>BAND B</label><input type="number" id="encB3" min="0" max="39"></div>
+                        </div>
+                        <div class="gpio-row" style="margin-top:6px">
+                            <div><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="encInv0" style="width:auto;margin:0"> MAIN A inv</label></div>
+                            <div><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="encInv1" style="width:auto;margin:0"> SUB A inv</label></div>
+                            <div><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="encInv2" style="width:auto;margin:0"> MODE A inv</label></div>
+                            <div><label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="encInv3" style="width:auto;margin:0"> BAND A inv</label></div>
+                        </div>
+                    </div>
                     <button type="submit" class="btn-warning">Save GPIO Settings</button>
                     <button type="button" class="btn-secondary" onclick="resetGpio()">Reset to Defaults</button>
                 </form>
@@ -327,6 +348,14 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
                 document.getElementById('gpioLed').value = gpio.led;
                 document.getElementById('gpioInfo').innerHTML =
                     `<p style="color:#888;margin-bottom:10px">Current: Key=GPIO${gpio.key_gpio}, Btn=GPIO${gpio.button}, LED=GPIO${gpio.led}</p>`;
+                if (gpio.enc_a) {
+                    document.getElementById('encoderSection').style.display = '';
+                    for (let i = 0; i < 4; i++) {
+                        document.getElementById('encA' + i).value = gpio.enc_a[i];
+                        document.getElementById('encB' + i).value = gpio.enc_b[i];
+                        document.getElementById('encInv' + i).checked = gpio.enc_a_inv[i] !== 0;
+                    }
+                }
             } catch (e) {
                 showMsg('Failed to load GPIO settings', false);
             }
@@ -337,10 +366,17 @@ const INDEX_HTML: &str = r#"<!DOCTYPE html>
             if (!confirm('⚠️ Are you sure you want to change GPIO settings?\\n\\nIncorrect settings may cause hardware malfunction.\\nChanges will take effect after restart.')) {
                 return;
             }
+            const encSection = document.getElementById('encoderSection');
+            const hasEncoder = encSection.style.display !== 'none';
             const gpio = {
                 key_gpio: parseInt(document.getElementById('gpioKey').value),
                 button: parseInt(document.getElementById('gpioBtn').value),
-                led: parseInt(document.getElementById('gpioLed').value)
+                led: parseInt(document.getElementById('gpioLed').value),
+                ...(hasEncoder && {
+                    enc_a: [0,1,2,3].map(i => parseInt(document.getElementById('encA'+i).value)),
+                    enc_b: [0,1,2,3].map(i => parseInt(document.getElementById('encB'+i).value)),
+                    enc_a_inv: [0,1,2,3].map(i => document.getElementById('encInv'+i).checked ? 1 : 0)
+                })
             };
             try {
                 const res = await fetch('/api/gpio', {
@@ -1001,10 +1037,23 @@ fn parse_profile_json(data: &[u8]) -> Option<WifiProfile> {
 
 /// Convert GPIO config to JSON
 fn gpio_to_json(gpio: &GpioConfig) -> String {
-    format!(
-        r#"{{"key_gpio":{},"button":{},"led":{}}}"#,
-        gpio.key_gpio, gpio.button, gpio.led
-    )
+    #[cfg(feature = "encoder")]
+    {
+        format!(
+            r#"{{"key_gpio":{},"button":{},"led":{},"enc_a":[{},{},{},{}],"enc_b":[{},{},{},{}],"enc_a_inv":[{},{},{},{}]}}"#,
+            gpio.key_gpio, gpio.button, gpio.led,
+            gpio.enc_a[0], gpio.enc_a[1], gpio.enc_a[2], gpio.enc_a[3],
+            gpio.enc_b[0], gpio.enc_b[1], gpio.enc_b[2], gpio.enc_b[3],
+            gpio.enc_a_inv[0], gpio.enc_a_inv[1], gpio.enc_a_inv[2], gpio.enc_a_inv[3],
+        )
+    }
+    #[cfg(not(feature = "encoder"))]
+    {
+        format!(
+            r#"{{"key_gpio":{},"button":{},"led":{}}}"#,
+            gpio.key_gpio, gpio.button, gpio.led
+        )
+    }
 }
 
 /// Parse GPIO config from JSON
@@ -1012,28 +1061,44 @@ fn parse_gpio_json(data: &[u8]) -> Option<GpioConfig> {
     let s = std::str::from_utf8(data).ok()?;
 
     let extract_num = |key: &str| -> Option<u8> {
-        // Find key position
         let key_str = format!(r#""{key}""#);
         let key_pos = s.find(&key_str)?;
         let rest = &s[key_pos + key_str.len()..];
-
-        // Skip to after colon
         let colon_pos = rest.find(':')?;
         let after_colon = rest[colon_pos + 1..].trim_start();
-
-        // Parse number
         let end = after_colon
             .find(|c: char| !c.is_ascii_digit())
             .unwrap_or(after_colon.len());
-        if end == 0 {
-            return None;
-        }
+        if end == 0 { return None; }
         after_colon[..end].parse().ok()
+    };
+
+    // Parse a JSON array of 4 u8 values: [a,b,c,d]
+    #[cfg(feature = "encoder")]
+    let extract_arr4 = |key: &str| -> Option<[u8; 4]> {
+        let key_str = format!(r#""{key}""#);
+        let key_pos = s.find(&key_str)?;
+        let rest = &s[key_pos + key_str.len()..];
+        let bracket = rest.find('[')?;
+        let end_bracket = rest.find(']')?;
+        let inner = &rest[bracket + 1..end_bracket];
+        let parts: Vec<u8> = inner
+            .split(',')
+            .filter_map(|x| x.trim().parse().ok())
+            .collect();
+        if parts.len() != 4 { return None; }
+        Some([parts[0], parts[1], parts[2], parts[3]])
     };
 
     Some(GpioConfig {
         key_gpio: extract_num("key_gpio")?,
         button: extract_num("button")?,
         led: extract_num("led")?,
+        #[cfg(feature = "encoder")]
+        enc_a: extract_arr4("enc_a").unwrap_or(crate::config::default_encoder::ENC_A),
+        #[cfg(feature = "encoder")]
+        enc_b: extract_arr4("enc_b").unwrap_or(crate::config::default_encoder::ENC_B),
+        #[cfg(feature = "encoder")]
+        enc_a_inv: extract_arr4("enc_a_inv").unwrap_or(crate::config::default_encoder::ENC_A_INV),
     })
 }

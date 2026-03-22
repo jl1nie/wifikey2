@@ -13,7 +13,8 @@ pio = ["std", "esp-idf-svc/pio"]
 std = ["alloc", "esp-idf-svc/binstart", "esp-idf-svc/std"]
 alloc = ["esp-idf-svc/alloc"]
 board_m5atom = []
-board_esp32_wrover = []
+board_esp32_wrover = ["encoder"]
+encoder = []
 
 [patch.crates-io]
 tokio = { git = "https://github.com/tokio-rs/tokio", branch = "master" }

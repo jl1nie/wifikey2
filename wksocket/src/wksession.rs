@@ -8,7 +8,7 @@ use rand::random;
 use std::io::{self, Cursor, Write};
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -104,7 +104,10 @@ impl KcpSocket {
             Err(err) => return Err(err.into()),
         }
         self.last_update = tick_count();
-        self.kcp.flush_ack()?;
+        // flush_ack() は内部バッファを送信せずにエンコードだけする（kcp-0.5.3 のバグ）。
+        // flush() を呼ぶことで ACK を即座に UDP 送信する。
+        // UDP 一時エラーで session が閉じないようエラーは無視する。
+        let _ = self.kcp.flush();
         Ok(())
     }
 
@@ -175,12 +178,18 @@ impl KcpSocket {
 pub struct WkSession {
     socket: Arc<Mutex<KcpSocket>>,
     closed: AtomicBool,
+    // data_available はデータ到着時に WkReceiver をブロック解除するための Condvar
+    data_available: (Mutex<bool>, Condvar),
 }
 
 impl Drop for WkSession {
     fn drop(&mut self) {
         info!("session dropped. stop thread.");
         self.closed.store(true, Ordering::Relaxed);
+        if let Ok(mut flag) = self.data_available.0.lock() {
+            *flag = true;
+            self.data_available.1.notify_all();
+        }
     }
 }
 
@@ -216,11 +225,16 @@ impl WkSession {
                 }
                 Err(e) => {
                     info!("kcp update failed. {e}");
+                    drop(s);
                     sleep(1000);
                 }
             }
         });
-        Ok(Arc::new(WkSession { socket, closed }))
+        Ok(Arc::new(WkSession {
+            socket,
+            closed,
+            data_available: (Mutex::new(false), Condvar::new()),
+        }))
     }
 
     pub fn connect(peer: SocketAddr, udp: UdpSocket) -> Result<Arc<WkSession>> {
@@ -245,7 +259,7 @@ impl WkSession {
                 if let Ok((n, src)) = client_udp.recv_from(buf) {
                     let pkt = &mut buf[..n];
                     if pkt.len() < kcp::KCP_OVERHEAD {
-                        info!("connect: packet too short {n} bytes received from {src}");
+                        trace!("connect: packet too short {n} bytes received from {src}");
                         continue;
                     }
                     let Ok(mut s) = client_socket.lock() else {
@@ -258,8 +272,18 @@ impl WkSession {
                     }
                     if s.closed() {
                         break;
-                    } else if s.input(pkt).is_err() {
-                        info!("conv. id inconsistent.");
+                    } else {
+                        let ok = s.input(pkt).is_ok();
+                        drop(s);
+                        if ok {
+                            if let Ok(mut flag) = client_session.data_available.0.lock() {
+                                *flag = true;
+                                client_session.data_available.1.notify_one();
+                            }
+                        } else {
+                            trace!("conv. id inconsistent.");
+                        }
+                        continue;
                     }
                 }
             }
@@ -273,7 +297,14 @@ impl WkSession {
             .socket
             .lock()
             .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
-        socket.input(buf)
+        socket.input(buf)?;
+        drop(socket);
+        // KCP キューにデータが積まれたことを recv_wait に通知
+        if let Ok(mut flag) = self.data_available.0.lock() {
+            *flag = true;
+            self.data_available.1.notify_one();
+        }
+        Ok(())
     }
 
     pub fn send(&self, buf: &[u8]) -> Result<usize> {
@@ -285,6 +316,40 @@ impl WkSession {
     }
 
     pub fn recv(&self, buf: &mut [u8]) -> Result<usize> {
+        let mut socket = self
+            .socket
+            .lock()
+            .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
+        socket.recv(buf)
+    }
+
+    /// データが届くまでブロック（最大 timeout_ms ms）して recv する。
+    /// sleep(1) ポーリングの代替。condvar で通知されるまで待機するため CPU を消費しない。
+    pub fn recv_wait(&self, buf: &mut [u8], timeout_ms: u32) -> Result<usize> {
+        // まず即時に試みる
+        {
+            let mut socket = self
+                .socket
+                .lock()
+                .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
+            match socket.recv(buf) {
+                Ok(n) if n > 0 => return Ok(n),
+                Err(e) => return Err(e),
+                Ok(_) => {}
+            }
+        }
+        // condvar でデータ到着通知を待つ（フラグで通知見逃しを防ぐ）
+        let (lock, cvar) = &self.data_available;
+        let mut flag = lock.lock().unwrap();
+        if !*flag {
+            let (f, _) = cvar
+                .wait_timeout(flag, Duration::from_millis(timeout_ms as u64))
+                .unwrap();
+            flag = f;
+        }
+        *flag = false;
+        drop(flag);
+        // 起床後に再試行
         let mut socket = self
             .socket
             .lock()
@@ -318,6 +383,12 @@ impl WkSession {
             .map_err(|_| anyhow::anyhow!("mutex poisoned"))?;
         socket.close();
         self.closed.store(true, Ordering::Relaxed);
+        drop(socket);
+        // 待機中の recv_wait を起こす
+        if let Ok(mut flag) = self.data_available.0.lock() {
+            *flag = true;
+            self.data_available.1.notify_all();
+        }
         Ok(())
     }
 

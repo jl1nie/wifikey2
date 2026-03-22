@@ -135,6 +135,8 @@ async function saveSettings() {
         await invoke('save_config', { newConfig });
         window.addLogEntry('Settings saved successfully', 'info');
         closeSettings();
+        // Reload rig action buttons to reflect the new Lua script
+        if (window.loadRigActions) await window.loadRigActions();
     } catch (error) {
         console.error('Failed to save settings:', error);
         window.addLogEntry(`Failed to save settings: ${error}`, 'error');

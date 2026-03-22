@@ -280,6 +280,12 @@ fn set_gpio(args: &str, config_manager: &Arc<Mutex<ConfigManager>>) -> String {
         key_gpio,
         button,
         led,
+        #[cfg(feature = "encoder")]
+        enc_a: crate::config::default_encoder::ENC_A,
+        #[cfg(feature = "encoder")]
+        enc_b: crate::config::default_encoder::ENC_B,
+        #[cfg(feature = "encoder")]
+        enc_a_inv: crate::config::default_encoder::ENC_A_INV,
     };
 
     // Validate

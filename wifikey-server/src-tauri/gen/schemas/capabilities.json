@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for WiFiKey2","local":true,"windows":["main"],"permissions":["core:default","shell:allow-open","log:default","core:event:default"]}}
+{"default":{"identifier":"default","description":"Default capabilities for WiFiKey2","local":true,"windows":["main"],"permissions":["core:default","shell:allow-open","log:default","core:event:default","core:window:allow-start-resize-dragging","core:window:allow-set-size","core:window:allow-set-title"]}}

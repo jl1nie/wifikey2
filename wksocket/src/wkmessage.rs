@@ -1,5 +1,4 @@
 use crate::wksession::{WkSession, PKT_SIZE};
-use crate::wkutil::sleep;
 use anyhow::{bail, Result};
 use bytes::{Buf, BufMut, BytesMut};
 use log::trace;
@@ -45,7 +44,12 @@ impl WkSender {
         let session_closed = Arc::new(AtomicBool::new(false));
         let closed = session_closed.clone();
         thread::spawn(move || loop {
-            if let Ok(cmd) = rx.try_recv() {
+            // ブロッキング recv で最初のメッセージを待ち、残りは try_iter でドレイン
+            let first_cmd = match rx.recv() {
+                Ok(cmd) => cmd,
+                Err(_) => break,
+            };
+            for cmd in std::iter::once(first_cmd).chain(rx.try_iter()) {
                 match cmd {
                     MessageSND::CloseSession => {
                         let _ = session.close();
@@ -127,7 +131,7 @@ impl WkSender {
                             continue;
                         }
                         if let Ok(n) = session.send(&buf) {
-                            trace!("EncoderEvent {n} bytes enc={encoder_id} dir={direction} steps={steps}");
+                            trace!("KCP sent EncoderEvent {n} bytes enc={encoder_id} dir={direction} steps={steps}");
                         } else {
                             trace!("session closed by peer");
                             let _ = session.close();
@@ -156,7 +160,6 @@ impl WkSender {
             if closed.load(Ordering::Relaxed) {
                 break;
             }
-            sleep(1);
         });
         Ok(WkSender { session_closed, tx })
     }
@@ -213,20 +216,21 @@ impl WkReceiver {
         thread::spawn(move || {
             let mut buf = [0u8; PKT_SIZE];
             loop {
-                if let Ok(n) = session.recv(&mut buf) {
-                    if n > 0 {
+                // データ到着まで condvar でブロック（最大 100ms タイムアウト）
+                match session.recv_wait(&mut buf, 100) {
+                    Ok(n) if n > 0 => {
                         let slots = WkReceiver::decode(&buf);
                         if tx.send(slots).is_err() {
                             trace!("receiver dropped, closing session");
                             break;
                         }
-                        // データがある間はスリープせず連続取得（エンコーダー遅延防止）
-                        continue;
                     }
-                } else {
-                    let slots = vec![MessageRCV::SessionClosed];
-                    let _ = tx.send(slots);
-                    closed.store(true, Ordering::Relaxed);
+                    Ok(_) => {} // timeout / no data
+                    Err(_) => {
+                        let slots = vec![MessageRCV::SessionClosed];
+                        let _ = tx.send(slots);
+                        closed.store(true, Ordering::Relaxed);
+                    }
                 }
 
                 if closed.load(Ordering::Relaxed) {
@@ -234,7 +238,6 @@ impl WkReceiver {
                     let _ = session.close();
                     break;
                 }
-                sleep(1);
             }
         });
         Ok(WkReceiver { session_closed, rx })

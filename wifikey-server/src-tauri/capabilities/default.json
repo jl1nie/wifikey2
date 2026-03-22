@@ -7,6 +7,9 @@
     "core:default",
     "shell:allow-open",
     "log:default",
-    "core:event:default"
+    "core:event:default",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-set-title"
   ]
 }

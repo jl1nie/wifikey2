@@ -28,6 +28,8 @@ pub struct SessionStats {
     pub pkt_per_sec: usize,
     /// Round-trip time in milliseconds
     pub rtt_ms: usize,
+    /// 緊急停止が有効かどうか
+    pub emergency_stopped: bool,
 }
 
 /// Get current session statistics
@@ -35,6 +37,10 @@ pub struct SessionStats {
 fn get_session_stats(state: State<'_, AppState>) -> SessionStats {
     let stats = state.remote_stats.get_session_stats();
     let (auth, atu, wpm, pkt, rtt) = state.remote_stats.get_misc_stats();
+    let stopped = {
+        let guard = state.server.blocking_lock();
+        guard.as_ref().map(|s| s.is_stopped()).unwrap_or(false)
+    };
 
     SessionStats {
         session_start: stats.get("session_start").cloned().unwrap_or_default(),
@@ -44,6 +50,7 @@ fn get_session_stats(state: State<'_, AppState>) -> SessionStats {
         wpm: wpm as f32 / 10.0,
         pkt_per_sec: pkt,
         rtt_ms: rtt,
+        emergency_stopped: stopped,
     }
 }
 
@@ -60,6 +67,26 @@ async fn start_atu(state: State<'_, AppState>) -> Result<(), String> {
     })
     .await
     .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// 緊急停止: キー/ATU 解除 + Lua ブロック + セッション切断
+#[tauri::command]
+async fn emergency_stop(state: State<'_, AppState>) -> Result<(), String> {
+    let guard = state.server.lock().await;
+    if let Some(server) = guard.as_ref() {
+        server.emergency_stop();
+    }
+    Ok(())
+}
+
+/// 緊急停止を解除
+#[tauri::command]
+async fn reset_emergency_stop(state: State<'_, AppState>) -> Result<(), String> {
+    let guard = state.server.lock().await;
+    if let Some(server) = guard.as_ref() {
+        server.reset_stop();
+    }
+    Ok(())
 }
 
 /// Get list of rig actions defined in Lua script
@@ -85,6 +112,17 @@ async fn run_rig_action(state: State<'_, AppState>, name: String) -> Result<(), 
     tokio::task::spawn_blocking(move || server.run_rig_action(&name).map_err(|e| e.to_string()))
         .await
         .map_err(|e| format!("Task join error: {}", e))?
+}
+
+/// コンテンツ高さに合わせてウィンドウをリサイズ（JS window API の権限問題を回避）
+#[tauri::command]
+fn resize_to_content(window: tauri::WebviewWindow, height: u32) -> Result<(), String> {
+    window
+        .set_size(tauri::Size::Logical(tauri::LogicalSize {
+            width: 450.0,
+            height: height as f64,
+        }))
+        .map_err(|e| e.to_string())
 }
 
 /// Get current configuration
@@ -314,7 +352,21 @@ fn init_server(
     Ok(Arc::new(server))
 }
 
+// Windows のタイマー解像度を 1ms に設定する（デフォルト 15ms）
+// sleep(1) が実質 15ms になる問題を防ぎ、KCP ポーリングや WkReceiver の遅延を低減する
+#[cfg(windows)]
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(uPeriod: u32) -> u32;
+}
+
 fn main() {
+    // Windows タイマー解像度を 1ms に設定（sleep(1) ≈ 1ms, デフォルトは ~15ms）
+    #[cfg(windows)]
+    unsafe {
+        timeBeginPeriod(1);
+    }
+
     // Set up panic hook to write to log file before crashing
     let default_panic = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -370,6 +422,7 @@ fn main() {
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_session_stats,
+            resize_to_content,
             start_atu,
             get_rig_actions,
             run_rig_action,
@@ -383,6 +436,8 @@ fn main() {
             esp32_restart,
             esp32_info,
             list_rig_scripts,
+            emergency_stop,
+            reset_emergency_stop,
         ])
         .setup(move |app| {
             log::info!("WiFiKey2 starting...");
