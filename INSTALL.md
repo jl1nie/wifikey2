@@ -11,7 +11,7 @@ This guide explains how to get started with WiFiKey2 without a development envir
 | Item | Description |
 |------|-------------|
 | Windows PC (Windows 10/11) | To run the server application |
-| M5Atom Lite × 1–2 | Paddle side (client) / Rig side (ESP32 server) |
+| M5Atom Lite × 1 | Paddle side (client) |
 | USB-C cable | For flashing and powering the M5Atom Lite |
 | CW paddle / straight key | Key connected to M5Atom Lite (via 3.5mm jack) |
 | Optocoupler circuit | Isolates key output to transceiver (or RS-232 adapter for PC server) |
@@ -28,14 +28,6 @@ This guide explains how to get started with WiFiKey2 without a development envir
 ```
 
 **wifikey-server** installed on the PC handles rig control and keying.
-
-### Pattern B: ESP32 Server (PC-less)
-
-```
-[Paddle] → [M5Atom Lite] →(WiFi)→ [M5Atom Lite server] → [Transceiver KEY port]
-```
-
-No PC required, but CAT control (frequency display, etc.) is not available.
 
 ---
 
@@ -108,8 +100,6 @@ Download and install **M5Burner** from the
 6. Click **「Burn」** to start flashing
 7. When "Done" is displayed, flashing is complete
 
-> **For Pattern B**, flash the same firmware to the ESP32 server unit using the same steps.
-
 ---
 
 ## Step 4: Initial Client Setup
@@ -156,54 +146,13 @@ Click **「Save & Restart」**. The M5Atom Lite restarts and begins connecting t
 
 ---
 
-## Step 5: ESP32 Server Setup (Pattern B only)
-
-Skip this step if you are using Pattern A (PC server).
-
-The ESP32 server unit also starts in AP mode after flashing.
-
-### 5-1. Confirm AP Mode
-
-- LED blinks **blue**
-- SSID will be `WkServer-XXXXXX`
-
-### 5-2. Connect to WiFi
-
-| Field | Value |
-|-------|-------|
-| **SSID** | `WkServer-XXXXXX` |
-| **Password** | `wifikey2` |
-
-### 5-3. Configure via Setup Page
-
-Navigate to `http://192.168.71.1` and configure:
-
-| Field | Description |
-|-------|-------------|
-| **WiFi SSID / Password** | Your WiFi network credentials |
-| **Server Name** | This server's identifier (must match the client's "Server Name") |
-| **Server Password** | Auth password (must match the client's "Server Password") |
-
-Click **「Add Profile」** → **「Save & Restart」**.
-
----
-
-## Step 6: Verify Connection
-
-### Pattern A (PC Server)
+## Step 5: Verify Connection
 
 1. Launch wifikey-server on PC
 2. Power on the M5Atom Lite (client)
 3. LED turns **yellow** → searching for server
 4. LED turns **off** → connected to server
 5. wifikey-server title bar turns **red** → connection established
-
-### Pattern B (ESP32 Server)
-
-1. Power on the ESP32 server M5Atom Lite first
-2. Power on the client M5Atom Lite
-3. Client LED turns **yellow** → searching for server
-4. Client LED turns **off** → connected
 
 ---
 

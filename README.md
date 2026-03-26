@@ -133,7 +133,7 @@ With `--features server`, the same `wifikey` crate runs as a standalone server. 
 - **ATU Control**: Antenna tuner activation
 - **Lua Rig Control**: Extensible rig control via Lua scripts (Yaesu CAT, ICOM CI-V, etc.)
 - **GUI Settings**: Serial port selection and settings (Tauri version)
-- **Easy ESP32 Setup**: AP mode/Web UI or USB serial configuration
+- **Easy ESP32 Setup**: AP mode/Web UI
 - **PC-less Operation**: Standalone operation with ESP32 server
 - **Performance Dashboard**: WPM, RTT, packet rate display
 
@@ -440,7 +440,7 @@ rig_script = "yaesu_ft891.lua"  # Lua CAT script name
 
 ### wifikey (ESP32 Client) Initial Setup
 
-Three methods available:
+Two methods available:
 
 #### Method 1: AP Mode + Web UI (Recommended)
 
@@ -472,18 +472,7 @@ Configure via smartphone or PC browser.
    - Click "Save & Restart"
    - ESP32 restarts and connects to configured WiFi
 
-#### Method 2: USB Serial via Server App
-
-Configure ESP32 via USB from wifikey-server app.
-
-1. Connect ESP32 via USB
-2. Launch wifikey-server
-3. Click **📡 button** (ESP32 Config)
-4. Select serial port and "Connect"
-5. Add/delete profiles
-6. "Restart ESP32" to apply
-
-#### Method 3: Build-time Defaults via cfg.toml
+#### Method 2: Build-time Defaults via cfg.toml
 
 For developers building from source, WiFi credentials can be baked into the firmware at compile time. This eliminates the need for AP mode setup on first boot.
 
@@ -499,29 +488,9 @@ For developers building from source, WiFi credentials can be baked into the firm
    ```
 
 2. Build and flash with `flash.ps1` — no AP mode or NVS writing needed
-3. If NVS profiles are saved later (via Web UI or AT commands), they take priority over these defaults
+3. If NVS profiles are saved later via Web UI, they take priority over these defaults
 
 > **Note**: The root `cfg.toml` serves dual purpose: runtime config for **wifikey-server** (PC) and build-time defaults for the ESP32 firmware. The `[wifikey]` section is used by the ESP32 build; the remaining settings are used by the PC server.
-
-#### Method 4: AT Commands via Serial Terminal
-
-Direct AT commands via serial terminal (115200bps).
-
-```
-AT              # Connection test → OK
-AT+HELP         # Show command list
-AT+LIST         # Show saved profiles
-AT+ADD=SSID,WiFiPass,ServerName,ServerPass  # Add profile
-AT+DEL=0        # Delete profile 0
-AT+CLEAR        # Delete all profiles
-AT+INFO         # Show device info
-AT+RESTART      # Restart
-```
-
-**Example: Add profile**
-```
-AT+ADD=MyWiFi,wifipassword,JA1XXX/keyer1,serverpassword
-```
 
 #### Multiple Profiles
 
@@ -568,7 +537,6 @@ AT+ADD=MyWiFi,wifipassword,JA1XXX/keyer1,serverpassword
 | Button | Function |
 |--------|----------|
 | Settings | Server settings (name, password, ports) |
-| ESP32 Config | ESP32 config (via USB serial) |
 | Start ATU | Send ATU start command |
 
 ### Performance Dashboard
