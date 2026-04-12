@@ -336,12 +336,12 @@ struct LuaState {
     lua: Lua,
     /// Registry key for the loaded script table (returned by the script's top-level chunk)
     rig_script: mlua::RegistryKey,
-    /// Keep a reference to the serial port so it stays alive
+    /// Keep a reference to the serial port so it stays alive (None if port open failed)
     #[allow(dead_code)]
-    port: LuaSerialPort,
-    /// Keep reader handle alive so background thread keeps running
+    port: Option<LuaSerialPort>,
+    /// Keep reader handle alive so background thread keeps running (None if port open failed)
     #[allow(dead_code)]
-    _reader_handle: ReaderHandle,
+    _reader_handle: Option<ReaderHandle>,
 }
 
 pub struct RigControl {
@@ -651,26 +651,39 @@ impl RigControl {
             _ => serialport::Parity::None,
         };
 
-        // リグコントロール用シリアルポートを開く
-        let port_box = serialport::new(rigcontrol_port, baud)
+        // リグコントロール用シリアルポートを開く（失敗してもLuaスクリプトとボタン定義は維持する）
+        let port_result = serialport::new(rigcontrol_port, baud)
             .timeout(Duration::from_millis(timeout_ms))
             .stop_bits(stop_bits)
             .parity(parity)
-            .open()
-            .with_context(|| format!("failed to open port {} for rigcontrol.", rigcontrol_port))?;
+            .open();
 
-        let (lua_port, reader_handle) = LuaSerialPort::new(port_box)?;
+        let (lua_port_opt, reader_handle_opt) = match port_result {
+            Ok(port_box) => match LuaSerialPort::new(port_box) {
+                Ok((lua_port, reader_handle)) => (Some(lua_port), Some(reader_handle)),
+                Err(e) => {
+                    warn!("[lua] Failed to create serial port handler: {} - CAT operations unavailable", e);
+                    (None, None)
+                }
+            },
+            Err(e) => {
+                warn!("[lua] Failed to open rigcontrol port '{}': {} - CAT operations unavailable", rigcontrol_port, e);
+                (None, None)
+            }
+        };
 
-        // ポートをスクリプトテーブルにセット
-        rig_table
-            .set("port", lua_port.clone())
-            .map_err(|e| anyhow::anyhow!("Failed to set port on rig table: {}", e))?;
+        // ポートをスクリプトテーブルにセット（None の場合は設定しない → Luaでself.portがnil）
+        if let Some(ref lua_port) = lua_port_opt {
+            rig_table
+                .set("port", lua_port.clone())
+                .map_err(|e| anyhow::anyhow!("Failed to set port on rig table: {}", e))?;
+        }
 
         let rig_key = lua
             .create_registry_value(rig_table.clone())
             .map_err(|e| anyhow::anyhow!("Failed to store rig table in registry: {}", e))?;
 
-        // on_init が定義されていれば起動時に1回呼び出す（状態の初期化に使用）
+        // on_init が定義されていれば起動時に1回呼び出す（ポートなし時はpcallで失敗を吸収）
         if let Ok(func) = rig_table.get::<LuaFunction>("on_init") {
             if let Err(e) = func.call::<()>(rig_table) {
                 warn!("[lua] on_init() failed: {}", e);
@@ -682,8 +695,8 @@ impl RigControl {
         Ok(LuaState {
             lua,
             rig_script: rig_key,
-            port: lua_port,
-            _reader_handle: reader_handle,
+            port: lua_port_opt,
+            _reader_handle: reader_handle_opt,
         })
     }
 
