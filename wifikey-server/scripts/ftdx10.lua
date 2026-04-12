@@ -23,15 +23,13 @@ rig.serial_config = {
     timeout_ms  = 200,
 }
 
--- モード一覧（循環切替）
-local MODES = {"LSB", "USB", "CW", "FM", "AM", "RTTY-L", "CW-R"}
+-- モード循環切替コード一覧
+local MODES = {"1", "2", "3", "4", "5", "6", "7"}  -- LSB/USB/CW/FM/AM/RTTY-L/CW-R
 
--- 現在のモードキャッシュ（get_mode()のシリアル読み取りを省くため）
+-- 現在のモードキャッシュ（get_mode()のシリアル読み取りを省くため、raw コードで保持）
 local cached_mode = nil
 
-
-
--- モードコード (MD0x;) → モード文字列
+-- 名前 → コード（set_mode で名前指定する場合のみ使用）
 local mode_to_cat = {
     ["LSB"]    = "1",
     ["USB"]    = "2",
@@ -41,10 +39,6 @@ local mode_to_cat = {
     ["RTTY-L"] = "6",
     ["CW-R"]   = "7",
 }
-local cat_to_mode = {}
-for k, v in pairs(mode_to_cat) do
-    cat_to_mode[v] = k
-end
 
 -- ========== ヘルパー ==========
 
@@ -110,18 +104,12 @@ end
 
 function rig:get_mode()
     local resp = cat_read(self, "MD0;")
-    local code = resp:sub(4, 4)
-    local mode = cat_to_mode[code]
-    if not mode then error("unknown mode code: '" .. code .. "' in '" .. resp .. "'") end
-    return mode
+    return resp:sub(4, 4)
 end
 
-function rig:set_mode(mode_str)
-    local code = mode_to_cat[mode_str]
-    if not code then
-        log_info("[set_mode] unknown mode: " .. tostring(mode_str))
-        return
-    end
+function rig:set_mode(mode)
+    -- 名前（"CW" など）またはコード（"3" など）を受け付ける
+    local code = mode_to_cat[mode] or mode
     cat_write(self, "MD0" .. code .. ";")
 end
 
